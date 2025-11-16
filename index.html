@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The beauty salón by alan — POS V1 (offline)</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<header>
+  <div class="wrap">
+    <div class="brand">
+      <div class="logo fallback" id="appLogo">BA</div>
+      <div>
+        <div class="title">The beauty salón by alan — Sistema de Gestión (V1)</div>
+        <div class="muted small">programa desarrollado por <b>contacto@gammaconsultores.mx</b></div>
+      </div>
+    </div>
+    <nav id="nav"></nav>
+  </div>
+</header>
+
+<div class="content" id="main"></div>
+
+<div class="signature">© <span id="year"></span> The beauty salón by alan — <span style="color:var(--rose)">programa desarrollado por contacto@gammaconsultores.mx</span></div>
+
+<div class="modal-backdrop" id="modalBackdrop"></div>
+
+<!-- Load modules in correct order -->
+<script src="js/utils.js"></script>
+<script src="js/database.js"></script>
+<script src="js/state.js"></script>
+<script src="js/ui.js"></script>
+<script src="js/pos.js"></script>
+<script src="js/app.js"></script>
+
+</body>
+</html>
