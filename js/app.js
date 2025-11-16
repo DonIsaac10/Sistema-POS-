@@ -4,7 +4,15 @@ class SalonPOSApp {
   constructor() {
     this.database = null;
     this.posLogic = null;
-    this.stateManager = window.stateManager;
+    const existingState = window.stateManager;
+    if (existingState) {
+      this.stateManager = existingState;
+    } else if (window.StateManager) {
+      this.stateManager = new window.StateManager();
+      window.stateManager = this.stateManager;
+    } else {
+      throw new Error('StateManager no disponible');
+    }
     this.initialized = false;
     this.paymentForm = null;
     this.currentTotals = null;

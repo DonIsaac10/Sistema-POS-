@@ -21,7 +21,7 @@ class StateManager {
       }
     };
     
-    this.tabs = [
+    this._tabs = [
       {id: 'pos', label: 'Punto de venta'},
       {id: 'orders', label: 'Órdenes'},
       {id: 'customers', label: 'Clientes'},
@@ -49,7 +49,7 @@ class StateManager {
   }
 
   get tabs() {
-    return this.tabs;
+    return this._tabs;
   }
 
   // Setters
