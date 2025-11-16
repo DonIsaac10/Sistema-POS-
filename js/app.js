@@ -6,14 +6,16 @@ class SalonPOSApp {
     this.posLogic = null;
     this.stateManager = window.stateManager;
     this.initialized = false;
+    this.paymentForm = null;
+    this.currentTotals = null;
   }
 
   async init() {
     try {
       UIComponents.showLoading('Iniciando sistema...');
       
-      // Initialize database
-      this.database = new Database();
+      // Initialize database (use static Database helper)
+      this.database = Database;
       await this.database.open();
       await this.database.seed();
       
@@ -73,8 +75,10 @@ class SalonPOSApp {
 
     // POS functions
     window.selectVariant = async (variantId) => {
-      this.posLogic.addVariant(variantId);
-      await this.renderPOS();
+      const added = await this.posLogic.addVariant(variantId);
+      if (added) {
+        await this.renderPOS();
+      }
     };
 
     window.selectCustomer = async (customerId) => {
@@ -174,10 +178,17 @@ class SalonPOSApp {
     });
 
     // Listen for lines changes
-    this.stateManager.on('linesChanged', () => {
+    this.stateManager.on('linesChanged', async () => {
       if (this.stateManager.activeTab === 'pos') {
         this.renderTicketLines();
-        this.renderTotals();
+        await this.renderTotals();
+        await this.renderPaymentMethods(this.currentTotals);
+      }
+    });
+
+    this.stateManager.on('paymentsChanged', async () => {
+      if (this.stateManager.activeTab === 'pos') {
+        await this.renderPaymentMethods(this.currentTotals);
       }
     });
   }
@@ -259,6 +270,7 @@ class SalonPOSApp {
 
     const pos = this.stateManager.pos;
     const totals = await this.posLogic.calcTotals();
+    this.currentTotals = totals;
 
     main.innerHTML = `
       <div class="grid">
@@ -304,10 +316,10 @@ class SalonPOSApp {
     this.renderTicketLines();
     
     // Render totals
-    this.renderTotals();
+    await this.renderTotals(totals);
     
     // Render payment methods
-    this.renderPaymentMethods();
+    await this.renderPaymentMethods(totals);
   }
 
   renderTicketLines() {
@@ -322,23 +334,240 @@ class SalonPOSApp {
     );
   }
 
-  async renderTotals() {
+  async renderTotals(precalcTotals = null) {
     const container = Utils.$('#totals');
     if (!container) return;
 
-    const totals = await this.posLogic.calcTotals();
+    const totals = precalcTotals || await this.posLogic.calcTotals();
+    this.currentTotals = totals;
     container.innerHTML = UIComponents.renderTotals(totals);
   }
 
-  renderPaymentMethods() {
+  async renderPaymentMethods(precalcTotals = null) {
     const container = Utils.$('#paymentMethods');
     if (!container) return;
 
-    container.innerHTML = UIComponents.renderPaymentMethods(
-      this.paymentMethods,
-      'Efectivo',
-      (method) => console.log('Payment method changed:', method)
-    );
+    const totals = precalcTotals || await this.posLogic.calcTotals();
+    this.currentTotals = totals;
+
+    const methods = (this.paymentMethods && this.paymentMethods.length)
+      ? [...this.paymentMethods]
+      : ['Efectivo'];
+
+    if (!this.paymentForm) {
+      const total = Number(totals.total || 0);
+      const half = Utils.to2(total / 2);
+      this.paymentForm = {
+        mode: 'single',
+        singleMethod: methods[0] || '',
+        singleAmount: total,
+        mixMethod1: methods[0] || '',
+        mixMethod2: methods[1] || methods[0] || '',
+        mixAmount1: half,
+        mixAmount2: Utils.to2(total - half)
+      };
+    }
+
+    this.syncPaymentFormWithState(totals, methods);
+
+    const payments = this.stateManager.pos.payments || [];
+    const paid = payments.reduce((sum, pay) => sum + Number(pay.monto || 0), 0);
+    const outstanding = Math.max(0, Number(((totals.total || 0) - paid).toFixed(2)));
+
+    container.innerHTML = UIComponents.renderPaymentMethods({
+      methods,
+      mode: this.paymentForm.mode,
+      singleMethod: this.paymentForm.singleMethod || methods[0] || '',
+      singleAmount: this.paymentForm.singleAmount ?? totals.total,
+      mixMethod1: this.paymentForm.mixMethod1 || methods[0] || '',
+      mixMethod2: this.paymentForm.mixMethod2 || methods[1] || methods[0] || '',
+      mixAmount1: this.paymentForm.mixAmount1 ?? ((totals.total || 0) / 2),
+      mixAmount2: this.paymentForm.mixAmount2 ?? ((totals.total || 0) / 2),
+      payments,
+      total: totals.total || 0,
+      paid,
+      outstanding
+    });
+
+    this.attachPaymentEvents(totals, methods);
+  }
+
+  syncPaymentFormWithState(totals, methods) {
+    if (!this.paymentForm) return;
+    const payments = this.stateManager.pos.payments || [];
+
+    if (payments.length === 0) {
+      if (!this.paymentForm.singleMethod) this.paymentForm.singleMethod = methods[0] || '';
+      if (!this.paymentForm.mixMethod1) this.paymentForm.mixMethod1 = methods[0] || '';
+      if (!this.paymentForm.mixMethod2) this.paymentForm.mixMethod2 = methods[1] || methods[0] || '';
+      if (this.paymentForm.singleAmount == null) this.paymentForm.singleAmount = totals.total || 0;
+      if (this.paymentForm.mixAmount1 == null) {
+        this.paymentForm.mixAmount1 = Utils.to2((totals.total || 0) / 2);
+      }
+      if (this.paymentForm.mixAmount2 == null) {
+        this.paymentForm.mixAmount2 = Utils.to2((totals.total || 0) / 2);
+      }
+      return;
+    }
+
+    if (payments.length === 1) {
+      this.paymentForm.mode = 'single';
+      this.paymentForm.singleMethod = payments[0].metodo;
+      this.paymentForm.singleAmount = payments[0].monto;
+    } else {
+      this.paymentForm.mode = 'mixed';
+      this.paymentForm.mixMethod1 = payments[0].metodo;
+      this.paymentForm.mixAmount1 = payments[0].monto;
+      const second = payments[1] || {};
+      this.paymentForm.mixMethod2 = second.metodo || this.paymentForm.mixMethod2 || methods[1] || methods[0] || '';
+      this.paymentForm.mixAmount2 = second.monto ?? this.paymentForm.mixAmount2 ?? 0;
+    }
+  }
+
+  attachPaymentEvents(totals, methods) {
+    const container = Utils.$('#paymentMethods');
+    if (!container) return;
+
+    const typeSelect = container.querySelector('#paymentType');
+    if (typeSelect) {
+      typeSelect.addEventListener('change', (e) => {
+        const val = e.target.value;
+        if (val === 'Mixto') {
+          this.paymentForm.mode = 'mixed';
+        } else {
+          this.paymentForm.mode = 'single';
+          this.paymentForm.singleMethod = val;
+        }
+        this.renderPaymentMethods(totals);
+      });
+    }
+
+    const singleInput = container.querySelector('#singleAmount');
+    if (singleInput) {
+      singleInput.addEventListener('input', (e) => {
+        this.paymentForm.singleAmount = this.parsePaymentNumber(e.target.value);
+      });
+    }
+
+    const fillBtn = container.querySelector('#singleFill');
+    if (fillBtn) {
+      fillBtn.addEventListener('click', (e) => {
+        e.preventDefault();
+        this.paymentForm.singleAmount = Number(totals.total || 0);
+        this.renderPaymentMethods(totals);
+      });
+    }
+
+    const applySingle = container.querySelector('#applySingle');
+    if (applySingle) {
+      applySingle.addEventListener('click', async (e) => {
+        e.preventDefault();
+        await this.applySinglePayment(totals);
+      });
+    }
+
+    const mixMethod1 = container.querySelector('#mixMethod1');
+    if (mixMethod1) {
+      mixMethod1.value = this.paymentForm.mixMethod1 || methods[0] || '';
+      mixMethod1.addEventListener('change', (e) => {
+        this.paymentForm.mixMethod1 = e.target.value;
+      });
+    }
+
+    const mixMethod2 = container.querySelector('#mixMethod2');
+    if (mixMethod2) {
+      mixMethod2.value = this.paymentForm.mixMethod2 || methods[1] || methods[0] || '';
+      mixMethod2.addEventListener('change', (e) => {
+        this.paymentForm.mixMethod2 = e.target.value;
+      });
+    }
+
+    const mixAmount1 = container.querySelector('#mixAmount1');
+    if (mixAmount1) {
+      mixAmount1.addEventListener('input', (e) => {
+        this.paymentForm.mixAmount1 = this.parsePaymentNumber(e.target.value);
+      });
+    }
+
+    const mixAmount2 = container.querySelector('#mixAmount2');
+    if (mixAmount2) {
+      mixAmount2.addEventListener('input', (e) => {
+        this.paymentForm.mixAmount2 = this.parsePaymentNumber(e.target.value);
+      });
+    }
+
+    const splitBtn = container.querySelector('#splitEven');
+    if (splitBtn) {
+      splitBtn.addEventListener('click', (e) => {
+        e.preventDefault();
+        const total = Number(totals.total || 0);
+        const half = Utils.to2(total / 2);
+        this.paymentForm.mixAmount1 = half;
+        this.paymentForm.mixAmount2 = Utils.to2(total - half);
+        this.renderPaymentMethods(totals);
+      });
+    }
+
+    const applyMixed = container.querySelector('#applyMixed');
+    if (applyMixed) {
+      applyMixed.addEventListener('click', async (e) => {
+        e.preventDefault();
+        await this.applyMixedPayments(totals);
+      });
+    }
+
+    const clearBtn = container.querySelector('#clearPayments');
+    if (clearBtn) {
+      clearBtn.addEventListener('click', (e) => {
+        e.preventDefault();
+        this.clearRegisteredPayments(totals);
+      });
+    }
+  }
+
+  parsePaymentNumber(value) {
+    const num = parseFloat(value);
+    return Number.isFinite(num) ? Number(num.toFixed(2)) : 0;
+  }
+
+  async applySinglePayment(totals) {
+    const method = this.paymentForm.singleMethod || this.paymentMethods?.[0] || 'Efectivo';
+    const amount = this.parsePaymentNumber(this.paymentForm.singleAmount);
+    try {
+      await this.posLogic.validatePayments(method, {single: amount});
+      Utils.toast('Pago registrado', 'ok');
+      await this.renderPaymentMethods(totals);
+    } catch (error) {
+      console.error('Error registrando pago', error);
+      Utils.toast('No se pudo registrar el pago', 'err');
+    }
+  }
+
+  async applyMixedPayments(totals) {
+    const payload = {
+      method1: this.paymentForm.mixMethod1 || this.paymentMethods?.[0] || 'Efectivo',
+      method2: this.paymentForm.mixMethod2 || this.paymentMethods?.[1] || this.paymentMethods?.[0] || 'Efectivo',
+      mix1: this.parsePaymentNumber(this.paymentForm.mixAmount1),
+      mix2: this.parsePaymentNumber(this.paymentForm.mixAmount2)
+    };
+
+    try {
+      await this.posLogic.validatePayments('Mixto', payload);
+      Utils.toast('Pagos registrados', 'ok');
+      await this.renderPaymentMethods(totals);
+    } catch (error) {
+      console.error('Error registrando pagos mixtos', error);
+      Utils.toast('No se pudieron registrar los pagos', 'err');
+    }
+  }
+
+  clearRegisteredPayments(totals) {
+    this.stateManager.setPayments([]);
+    if (this.paymentForm) {
+      this.paymentForm.mode = 'single';
+      this.paymentForm.singleAmount = totals.total || 0;
+    }
+    this.renderPaymentMethods(totals);
   }
 
   async renderOrders() {
@@ -462,6 +691,7 @@ class SalonPOSApp {
       
       Utils.toast('Ticket cerrado exitosamente', 'ok');
       this.posLogic.resetPOS();
+      this.paymentForm = null;
       
       await this.renderPOS();
     } catch (error) {
@@ -474,6 +704,7 @@ class SalonPOSApp {
 
   resetPOS() {
     this.posLogic.resetPOS();
+    this.paymentForm = null;
     this.renderPOS();
   }
 

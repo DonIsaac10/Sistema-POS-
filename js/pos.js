@@ -123,22 +123,33 @@ class POSLogic {
   }
 
   // Add product variant to ticket
-  addVariant(variantId, qty = 1) {
-    const variant = this.db.getById('variants', variantId);
-    if (!variant) return false;
+  async addVariant(variantId, qty = 1) {
+    try {
+      const variant = await this.db.getById('variants', variantId);
+      if (!variant) {
+        Utils.toast('Producto no encontrado', 'err');
+        return false;
+      }
 
-    const line = {
-      id: Utils.uid(),
-      variant_id: variant.id,
-      variant: variant,
-      qty: qty,
-      discount: 0,
-      stylists: [...this.state.pos.stylistsGlobal],
-      manualAdjust: null
-    };
+      const line = {
+        id: Utils.uid(),
+        variant_id: variant.id,
+        variant,
+        qty: Number(qty) || 1,
+        discount: 0,
+        stylists: Array.isArray(this.state.pos.stylistsGlobal)
+          ? [...this.state.pos.stylistsGlobal]
+          : [],
+        manualAdjust: null
+      };
 
-    this.state.addLine(line);
-    return true;
+      this.state.addLine(line);
+      return true;
+    } catch (error) {
+      console.error('Error adding variant', error);
+      Utils.toast('No se pudo agregar el producto', 'err');
+      return false;
+    }
   }
 
   // Remove line from ticket

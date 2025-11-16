@@ -180,15 +180,101 @@ class UIComponents {
   }
 
   // Payment methods
-  static renderPaymentMethods(paymentMethods, selectedMethod, onMethodChange) {
-    let html = '<select id="paymentType">';
-    
-    paymentMethods.forEach(method => {
-      html += `<option value="${method}" ${selectedMethod === method ? 'selected' : ''}>${method}</option>`;
-    });
-    
-    html += '<option value="Mixto">Mixto</option></select>';
-    return html;
+  static renderPaymentMethods(config) {
+    if (!config) return '';
+
+    const {
+      methods = [],
+      mode = 'single',
+      singleMethod,
+      singleAmount,
+      mixMethod1,
+      mixMethod2,
+      mixAmount1,
+      mixAmount2,
+      payments = [],
+      total = 0,
+      paid = 0,
+      outstanding = 0
+    } = config;
+
+    const methodOptions = methods.map(method => `
+      <option value="${method}" ${(mode === 'single' && singleMethod === method) ? 'selected' : ''}>
+        ${method}
+      </option>
+    `).join('');
+
+    const mixOptions = (selected) => methods.map(method => `
+      <option value="${method}" ${selected === method ? 'selected' : ''}>${method}</option>
+    `).join('');
+
+    const summary = payments.length
+      ? payments.map(p => `
+          <div class="totals">
+            <div>${p.metodo}</div>
+            <div><b>${Utils.money(p.monto)}</b></div>
+          </div>
+        `).join('')
+      : '<div class="muted small">Sin pagos registrados</div>';
+
+    return `
+      <div class="paybox">
+        <label>Forma de pago</label>
+        <select id="paymentType">
+          ${methodOptions}
+          <option value="Mixto" ${mode === 'mixed' ? 'selected' : ''}>Mixto</option>
+        </select>
+      </div>
+
+      <div id="singleSection" class="${mode === 'single' ? '' : 'hidden'}">
+        <label>Monto</label>
+        <input type="number" id="singleAmount" min="0" step="0.01" value="${Number(singleAmount || 0).toFixed(2)}">
+        <div class="row" style="margin-top:8px">
+          <button class="btn light" id="singleFill">Usar total (${Utils.money(total)})</button>
+          <button class="btn" id="applySingle">Registrar pago</button>
+        </div>
+      </div>
+
+      <div id="mixedSection" class="${mode === 'mixed' ? '' : 'hidden'}">
+        <div class="row">
+          <div>
+            <label>Metodo 1</label>
+            <select id="mixMethod1">${mixOptions(mixMethod1)}</select>
+          </div>
+          <div>
+            <label>Monto 1</label>
+            <input type="number" id="mixAmount1" min="0" step="0.01" value="${Number(mixAmount1 || 0).toFixed(2)}">
+          </div>
+        </div>
+        <div class="row">
+          <div>
+            <label>Metodo 2</label>
+            <select id="mixMethod2">${mixOptions(mixMethod2)}</select>
+          </div>
+          <div>
+            <label>Monto 2</label>
+            <input type="number" id="mixAmount2" min="0" step="0.01" value="${Number(mixAmount2 || 0).toFixed(2)}">
+          </div>
+        </div>
+        <div class="row" style="margin-top:8px">
+          <button class="btn light" id="splitEven">Repartir total</button>
+          <button class="btn" id="applyMixed">Registrar pagos</button>
+        </div>
+      </div>
+
+      <div class="card" style="margin-top:12px">
+        <div class="pad">
+          <h4 style="margin-top:0">Pagos registrados</h4>
+          ${summary}
+          <div class="row" style="justify-content:space-between;margin-top:12px">
+            <div class="${outstanding > 0 ? 'muted' : 'success'} small">
+              ${outstanding > 0 ? `Restante: ${Utils.money(outstanding)}` : `Pagado: ${Utils.money(paid)}`}
+            </div>
+            <button class="btn light tiny" id="clearPayments"${payments.length ? '' : ' disabled'}>Limpiar</button>
+          </div>
+        </div>
+      </div>
+    `;
   }
 
   // Orders table
