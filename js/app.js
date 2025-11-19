@@ -16,6 +16,8 @@ class SalonPOSApp {
     this.initialized = false;
     this.paymentForm = null;
     this.currentTotals = null;
+    this.customers = [];
+    this.stylists = [];
   }
 
   async init() {
@@ -64,15 +66,37 @@ class SalonPOSApp {
       // Load initial data for POS
       this.products = await this.database.getAll('products');
       this.variants = await this.database.getAll('variants');
-      this.customers = await this.database.getAll('customers');
-      this.stylists = await this.database.getAll('stylists');
+      await this.reloadCustomers();
+      await this.reloadStylists();
       
       // Load payment methods from settings
-      this.paymentMethods = this.settings?.payment_methods || ['Efectivo', 'Tarjeta', 'Transferencia'];
+      this.paymentMethods = (this.settings && this.settings.payment_methods) || ['Efectivo', 'Tarjeta', 'Transferencia'];
     } catch (error) {
       console.error('Error loading initial data:', error);
       throw error;
     }
+  }
+
+  async reloadCustomers() {
+    const list = await this.database.getAll('customers');
+    list.sort((a, b) => {
+      const an = ((a && a.nombre) || '').toString().toLowerCase();
+      const bn = ((b && b.nombre) || '').toString().toLowerCase();
+      return an.localeCompare(bn, 'es', {sensitivity: 'base'});
+    });
+    this.customers = list;
+    return this.customers;
+  }
+
+  async reloadStylists() {
+    const list = await this.database.getAll('stylists');
+    list.sort((a, b) => {
+      const an = ((a && a.nombre) || '').toString().toLowerCase();
+      const bn = ((b && b.nombre) || '').toString().toLowerCase();
+      return an.localeCompare(bn, 'es', {sensitivity: 'base'});
+    });
+    this.stylists = list;
+    return this.stylists;
   }
 
   setupEventListeners() {
@@ -106,10 +130,16 @@ class SalonPOSApp {
         // Add with default percentage
         const stylist = this.stylists.find(s => s.id === stylistId);
         if (stylist) {
-          pos.stylistsGlobal = Utils.autoBalance([
-            ...stylists,
-            {id: stylist.id, nombre: stylist.nombre, pct: 0}
-          ]);
+          const clone = stylists.slice();
+          const pctValue = stylist.pct != null
+            ? Number(stylist.pct)
+            : (stylist.porcentaje != null ? Number(stylist.porcentaje) : 0);
+          clone.push({
+            id: stylist.id,
+            nombre: stylist.nombre,
+            pct: pctValue
+          });
+          pos.stylistsGlobal = Utils.autoBalance(clone);
         }
       }
       
@@ -126,6 +156,14 @@ class SalonPOSApp {
       this.posLogic.removeLine(lineIndex);
       this.renderPOS();
     };
+
+    window.newCustomer = () => this.openCustomerForm();
+    window.editCustomer = (customerId) => this.openCustomerForm(customerId);
+    window.deleteCustomer = (customerId) => this.removeCustomer(customerId);
+
+    window.newStylist = () => this.openStylistForm();
+    window.editStylist = (stylistId) => this.openStylistForm(stylistId);
+    window.deleteStylist = (stylistId) => this.removeStylist(stylistId);
 
     window.viewOrder = async (orderId) => {
       // TODO: Implement order view modal
@@ -209,13 +247,13 @@ class SalonPOSApp {
   }
 
   renderHeader() {
-    const salonName = this.settings?.salon || 'The beauty salón by alan';
-    const firma = this.settings?.firma || 'contacto@gammaconsultores.mx';
+    const salonName = (this.settings && this.settings.salon) || 'The beauty sal\u00f3n by alan';
+    const firma = (this.settings && this.settings.firma) || 'contacto@gammaconsultores.mx';
     UIComponents.renderHeader(salonName, firma);
   }
 
   renderFooter() {
-    const firma = this.settings?.firma || 'contacto@gammaconsultores.mx';
+    const firma = (this.settings && this.settings.firma) || 'contacto@gammaconsultores.mx';
     UIComponents.renderFooter(firma);
   }
 
@@ -264,11 +302,11 @@ class SalonPOSApp {
           await this.renderSettings();
           break;
         default:
-          main.innerHTML = '<div class="pad center muted">Página no encontrada</div>';
+          main.innerHTML = '<div class="pad center muted">P\u00e1gina no encontrada</div>';
       }
     } catch (error) {
       console.error('Error rendering main content:', error);
-      main.innerHTML = '<div class="pad center err">Error al cargar la página</div>';
+      main.innerHTML = '<div class="pad center err">Error al cargar la p\u00e1gina</div>';
     }
   }
 
@@ -283,7 +321,7 @@ class SalonPOSApp {
     main.innerHTML = `
       <div class="grid">
         <div class="card">
-          <h3>Catálogo</h3>
+          <h3>Cat\u00e1logo</h3>
           <div class="pad">
             <div class="catalog" id="catalog"></div>
           </div>
@@ -304,7 +342,7 @@ class SalonPOSApp {
             <h3>Pago</h3>
             <div class="pad">
               <div class="paybox">
-                <label>Método:</label>
+                <label>M\u00e9todo:</label>
                 <div id="paymentMethods"></div>
               </div>
               <div class="footer">
@@ -359,7 +397,7 @@ class SalonPOSApp {
     this.currentTotals = totals;
 
     const methods = (this.paymentMethods && this.paymentMethods.length)
-      ? [...this.paymentMethods]
+      ? this.paymentMethods.slice()
       : ['Efectivo'];
 
     if (!this.paymentForm) {
@@ -386,11 +424,11 @@ class SalonPOSApp {
       methods,
       mode: this.paymentForm.mode,
       singleMethod: this.paymentForm.singleMethod || methods[0] || '',
-      singleAmount: this.paymentForm.singleAmount ?? totals.total,
+      singleAmount: (this.paymentForm.singleAmount != null ? this.paymentForm.singleAmount : totals.total),
       mixMethod1: this.paymentForm.mixMethod1 || methods[0] || '',
       mixMethod2: this.paymentForm.mixMethod2 || methods[1] || methods[0] || '',
-      mixAmount1: this.paymentForm.mixAmount1 ?? ((totals.total || 0) / 2),
-      mixAmount2: this.paymentForm.mixAmount2 ?? ((totals.total || 0) / 2),
+      mixAmount1: (this.paymentForm.mixAmount1 != null ? this.paymentForm.mixAmount1 : ((totals.total || 0) / 2)),
+      mixAmount2: (this.paymentForm.mixAmount2 != null ? this.paymentForm.mixAmount2 : ((totals.total || 0) / 2)),
       payments,
       total: totals.total || 0,
       paid,
@@ -428,7 +466,7 @@ class SalonPOSApp {
       this.paymentForm.mixAmount1 = payments[0].monto;
       const second = payments[1] || {};
       this.paymentForm.mixMethod2 = second.metodo || this.paymentForm.mixMethod2 || methods[1] || methods[0] || '';
-      this.paymentForm.mixAmount2 = second.monto ?? this.paymentForm.mixAmount2 ?? 0;
+      this.paymentForm.mixAmount2 = (second.monto != null ? second.monto : (this.paymentForm.mixAmount2 != null ? this.paymentForm.mixAmount2 : 0));
     }
   }
 
@@ -539,7 +577,7 @@ class SalonPOSApp {
   }
 
   async applySinglePayment(totals) {
-    const method = this.paymentForm.singleMethod || this.paymentMethods?.[0] || 'Efectivo';
+    const method = this.paymentForm.singleMethod || (this.paymentMethods && this.paymentMethods[0]) || 'Efectivo';
     const amount = this.parsePaymentNumber(this.paymentForm.singleAmount);
     try {
       await this.posLogic.validatePayments(method, {single: amount});
@@ -553,8 +591,8 @@ class SalonPOSApp {
 
   async applyMixedPayments(totals) {
     const payload = {
-      method1: this.paymentForm.mixMethod1 || this.paymentMethods?.[0] || 'Efectivo',
-      method2: this.paymentForm.mixMethod2 || this.paymentMethods?.[1] || this.paymentMethods?.[0] || 'Efectivo',
+      method1: this.paymentForm.mixMethod1 || (this.paymentMethods && this.paymentMethods[0]) || 'Efectivo',
+      method2: this.paymentForm.mixMethod2 || (this.paymentMethods && this.paymentMethods[1]) || (this.paymentMethods && this.paymentMethods[0]) || 'Efectivo',
       mix1: this.parsePaymentNumber(this.paymentForm.mixAmount1),
       mix2: this.parsePaymentNumber(this.paymentForm.mixAmount2)
     };
@@ -584,7 +622,7 @@ class SalonPOSApp {
     
     main.innerHTML = `
       <div class="card">
-        <h3>Órdenes</h3>
+        <h3>\u00d3rdenes</h3>
         <div class="pad">
           ${UIComponents.renderOrdersTable(orders)}
         </div>
@@ -594,11 +632,58 @@ class SalonPOSApp {
 
   async renderCustomers() {
     const main = Utils.$('#main');
+    if (!main) return;
+
+    await this.reloadCustomers();
+    const rows = this.customers.length ? this.customers.map(customer => {
+      const points = this.safeValue(Number(customer.puntos || 0).toLocaleString('es-MX'));
+      const phone = customer.celular ? this.safeValue(customer.celular) : null;
+      const email = customer.correo ? `<div class="small muted">${this.safeValue(customer.correo)}</div>` : '';
+      const notes = customer.notas ? `<div class="small muted">${this.safeValue(customer.notas)}</div>` : '';
+      return `
+        <tr>
+          <td>
+            <strong>${this.safeValue(customer.nombre || 'Sin nombre')}</strong>
+            ${email}
+            ${notes}
+          </td>
+          <td>${phone || '<span class="muted small">Sin tel\u00E9fono</span>'}</td>
+          <td>${points}</td>
+          <td>
+            <div style="display:flex; gap:6px; flex-wrap:wrap; justify-content:flex-end">
+              <button class="btn tiny light" onclick="editCustomer('${customer.id}')">Editar</button>
+              <button class="btn tiny err" onclick="deleteCustomer('${customer.id}')">Eliminar</button>
+            </div>
+          </td>
+        </tr>
+      `;
+    }).join('') : `
+      <tr>
+        <td colspan="4" class="center muted">A\u00FAn no hay clientes registrados</td>
+      </tr>
+    `;
+
     main.innerHTML = `
       <div class="card">
-        <h3>Clientes</h3>
+        <div class="pad" style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">
+          <div>
+            <h3>Clientes</h3>
+            <div class="muted small">${this.customers.length} registro${this.customers.length === 1 ? '' : 's'}</div>
+          </div>
+          <button class="btn" onclick="newCustomer()">Agregar cliente</button>
+        </div>
         <div class="pad">
-          <div class="muted">Módulo de clientes en desarrollo...</div>
+          <table class="table small">
+            <thead>
+              <tr>
+                <th>Cliente</th>
+                <th>Tel\u00E9fono</th>
+                <th>Puntos</th>
+                <th class="right">Acciones</th>
+              </tr>
+            </thead>
+            <tbody>${rows}</tbody>
+          </table>
         </div>
       </div>
     `;
@@ -606,23 +691,314 @@ class SalonPOSApp {
 
   async renderStylists() {
     const main = Utils.$('#main');
+    if (!main) return;
+
+    await this.reloadStylists();
+    const rows = this.stylists.length ? this.stylists.map(stylist => {
+      const pct = this.safeValue(Number((stylist.pct != null ? stylist.pct : (stylist.porcentaje != null ? stylist.porcentaje : 0))).toFixed(1));
+      const phone = stylist.celular ? this.safeValue(stylist.celular) : null;
+      const role = this.safeValue(stylist.rol || 'Estilista');
+      return `
+        <tr>
+          <td>
+            <strong>${this.safeValue(stylist.nombre || 'Sin nombre')}</strong>
+            <div class="small muted">${role}</div>
+          </td>
+          <td>${phone || '<span class="muted small">Sin tel\u00E9fono</span>'}</td>
+          <td>${pct}%</td>
+          <td>
+            <div style="display:flex; gap:6px; flex-wrap:wrap; justify-content:flex-end">
+              <button class="btn tiny light" onclick="editStylist('${stylist.id}')">Editar</button>
+              <button class="btn tiny err" onclick="deleteStylist('${stylist.id}')">Eliminar</button>
+            </div>
+          </td>
+        </tr>
+      `;
+    }).join('') : `
+      <tr>
+        <td colspan="4" class="center muted">A\u00FAn no hay estilistas registrados</td>
+      </tr>
+    `;
+
     main.innerHTML = `
       <div class="card">
-        <h3>Estilistas / Cajeros</h3>
+        <div class="pad" style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">
+          <div>
+            <h3>Estilistas / Cajeros</h3>
+            <div class="muted small">${this.stylists.length} registro${this.stylists.length === 1 ? '' : 's'}</div>
+          </div>
+          <button class="btn" onclick="newStylist()">Agregar estilista</button>
+        </div>
         <div class="pad">
-          <div class="muted">Módulo de estilistas en desarrollo...</div>
+          <table class="table small">
+            <thead>
+              <tr>
+                <th>Nombre</th>
+                <th>Tel\u00E9fono</th>
+                <th>% Comisi\u00F3n</th>
+                <th class="right">Acciones</th>
+              </tr>
+            </thead>
+            <tbody>${rows}</tbody>
+          </table>
         </div>
       </div>
     `;
   }
 
+  openCustomerForm(customerId = null) {
+    const customer = customerId ? this.customers.find(c => c.id === customerId) : null;
+    Utils.showModal(customer ? 'Editar cliente' : 'Nuevo cliente', `
+      <div class="row">
+        <div>
+          <label>Nombre completo</label>
+          <input type="text" id="customerName" placeholder="Nombre y apellido" value="${this.safeValue(customer && customer.nombre)}">
+        </div>
+        <div>
+          <label>Tel\u00E9fono / celular</label>
+          <input type="tel" id="customerPhone" placeholder="5551234567" value="${this.safeValue(customer && customer.celular)}">
+        </div>
+      </div>
+      <div class="row" style="margin-top:8px">
+        <div>
+          <label>Correo</label>
+          <input type="email" id="customerEmail" placeholder="correo@dominio.com" value="${this.safeValue(customer && customer.correo)}">
+        </div>
+        <div>
+          <label>Puntos disponibles</label>
+          <input type="number" id="customerPoints" min="0" step="1" value="${this.safeValue((customer && customer.puntos) != null ? customer.puntos : 0)}">
+        </div>
+      </div>
+      <div style="margin-top:8px">
+        <label>Notas</label>
+        <textarea id="customerNotes" rows="3">${this.safeValue(customer && customer.notas)}</textarea>
+      </div>
+    `, {
+      okText: 'Guardar',
+      onOk: () => this.handleCustomerFormSubmit((customer && customer.id))
+    });
+
+    setTimeout(() => {
+      const input = Utils.$('#customerName');
+      if (input) input.focus();
+    }, 50);
+  }
+
+  async handleCustomerFormSubmit(customerId) {
+    const nameEl = Utils.$('#customerName');
+    const phoneEl = Utils.$('#customerPhone');
+    const emailEl = Utils.$('#customerEmail');
+    const pointsEl = Utils.$('#customerPoints');
+    const notesEl = Utils.$('#customerNotes');
+
+    const nombre = Utils.cleanTxt((nameEl ? nameEl.value : '') || '');
+    if (!nombre) {
+      Utils.toast('El nombre es obligatorio', 'warn');
+      return false;
+    }
+
+    const puntos = Math.max(0, Number((pointsEl ? pointsEl.value : '') || 0));
+    const record = {
+      id: customerId || undefined,
+      nombre,
+      celular: Utils.cleanTxt((phoneEl ? phoneEl.value : '') || ''),
+      correo: Utils.cleanTxt((emailEl ? emailEl.value : '') || ''),
+      puntos,
+      notas: Utils.cleanTxt((notesEl ? notesEl.value : '') || '')
+    };
+
+    try {
+      await this.database.put('customers', record);
+      await this.reloadCustomers();
+      const saved = this.customers.find(c => c.id === record.id) || record;
+      if (this.stateManager.pos.customer && this.stateManager.pos.customer.id === saved.id) {
+        this.stateManager.setCustomer(saved);
+      }
+      if (this.stateManager.activeTab === 'customers') {
+        await this.renderCustomers();
+      }
+      Utils.toast('Cliente guardado', 'ok');
+      return true;
+    } catch (error) {
+      console.error('Error saving customer', error);
+      Utils.toast('No se pudo guardar el cliente', 'err');
+      return false;
+    }
+  }
+
+  async removeCustomer(customerId) {
+    if (!customerId) return;
+    const customer = this.customers.find(c => c.id === customerId);
+    if (!customer) return;
+    const proceed = window.confirm(`\u00BFEliminar al cliente "${customer.nombre || 'Sin nombre'}"?`);
+    if (!proceed) return;
+
+    try {
+      await this.database.delete('customers', customerId);
+      await this.reloadCustomers();
+      if (this.stateManager.pos.customer && this.stateManager.pos.customer.id === customerId) {
+        this.stateManager.setCustomer(null);
+      }
+      if (this.stateManager.activeTab === 'customers') {
+        await this.renderCustomers();
+      }
+      Utils.toast('Cliente eliminado', 'warn');
+    } catch (error) {
+      console.error('Error deleting customer', error);
+      Utils.toast('No se pudo eliminar el cliente', 'err');
+    }
+  }
+
+  openStylistForm(stylistId = null) {
+    const stylist = stylistId ? this.stylists.find(s => s.id === stylistId) : null;
+    Utils.showModal(stylist ? 'Editar estilista' : 'Nuevo estilista', `
+      <div class="row">
+        <div>
+          <label>Nombre</label>
+          <input type="text" id="stylistName" placeholder="Nombre del estilista" value="${this.safeValue(stylist && stylist.nombre)}">
+        </div>
+        <div>
+          <label>Rol</label>
+          <input type="text" id="stylistRole" placeholder="Estilista, cajero, etc." value="${this.safeValue(stylist && stylist.rol)}">
+        </div>
+      </div>
+      <div class="row" style="margin-top:8px">
+        <div>
+          <label>Tel\u00E9fono</label>
+          <input type="tel" id="stylistPhone" placeholder="5551234567" value="${this.safeValue(stylist && stylist.celular)}">
+        </div>
+        <div>
+          <label>% Comisi\u00F3n</label>
+          <input type="number" id="stylistPct" min="0" max="100" step="0.5" value="${this.safeValue((stylist && stylist.pct) != null ? stylist.pct : (stylist && stylist.porcentaje) != null ? stylist.porcentaje : 0)}">
+        </div>
+      </div>
+    `, {
+      okText: 'Guardar',
+      onOk: () => this.handleStylistFormSubmit((stylist && stylist.id))
+    });
+
+    setTimeout(() => {
+      const input = Utils.$('#stylistName');
+      if (input) input.focus();
+    }, 50);
+  }
+
+  async handleStylistFormSubmit(stylistId) {
+    const nameEl = Utils.$('#stylistName');
+    const roleEl = Utils.$('#stylistRole');
+    const phoneEl = Utils.$('#stylistPhone');
+    const pctEl = Utils.$('#stylistPct');
+
+    const nombre = Utils.cleanTxt((nameEl ? nameEl.value : '') || '');
+    if (!nombre) {
+      Utils.toast('El nombre es obligatorio', 'warn');
+      return false;
+    }
+
+    const pct = Utils.clamp(Number((pctEl ? pctEl.value : '') || 0), 0, 100);
+    const record = {
+      id: stylistId || undefined,
+      nombre,
+      rol: Utils.cleanTxt((roleEl ? roleEl.value : '') || ''),
+      celular: Utils.cleanTxt((phoneEl ? phoneEl.value : '') || ''),
+      pct
+    };
+
+    try {
+      await this.database.put('stylists', record);
+      await this.reloadStylists();
+      this.syncPosStylistsFromMaster();
+      if (this.stateManager.activeTab === 'stylists') {
+        await this.renderStylists();
+      }
+      if (this.stateManager.activeTab === 'pos') {
+        await this.renderPOS();
+      }
+      Utils.toast('Estilista guardado', 'ok');
+      return true;
+    } catch (error) {
+      console.error('Error saving stylist', error);
+      Utils.toast('No se pudo guardar el estilista', 'err');
+      return false;
+    }
+  }
+
+  async removeStylist(stylistId) {
+    if (!stylistId) return;
+    const stylist = this.stylists.find(s => s.id === stylistId);
+    if (!stylist) return;
+    const proceed = window.confirm(`\u00BFEliminar a "${stylist.nombre || 'Sin nombre'}"?`);
+    if (!proceed) return;
+
+    try {
+      await this.database.delete('stylists', stylistId);
+      await this.reloadStylists();
+      this.syncPosStylistsFromMaster();
+      if (this.stateManager.activeTab === 'stylists') {
+        await this.renderStylists();
+      }
+      if (this.stateManager.activeTab === 'pos') {
+        await this.renderPOS();
+      }
+      Utils.toast('Estilista eliminado', 'warn');
+    } catch (error) {
+      console.error('Error deleting stylist', error);
+      Utils.toast('No se pudo eliminar el estilista', 'err');
+    }
+  }
+
+  syncPosStylistsFromMaster() {
+    const pos = this.stateManager.pos;
+    const map = new Map(this.stylists.map(s => [s.id, s]));
+
+    if (Array.isArray(pos.stylistsGlobal)) {
+      const synced = pos.stylistsGlobal
+        .map(sel => {
+          const ref = map.get(sel.id);
+          if (!ref) return null;
+          const pctValue = ref.pct != null
+            ? ref.pct
+            : (ref.porcentaje != null ? ref.porcentaje : (sel.pct != null ? sel.pct : 0));
+          return Object.assign({}, sel, {
+            nombre: ref.nombre,
+            pct: Number(pctValue)
+          });
+        })
+        .filter(Boolean);
+      this.stateManager.setStylistsGlobal(synced);
+    }
+
+    if (Array.isArray(pos.lines) && pos.lines.length) {
+      let changed = false;
+      const updatedLines = pos.lines.map(line => {
+        if (!Array.isArray(line.stylists) || !line.stylists.length) return line;
+        const updatedStylists = line.stylists
+          .map(sel => {
+            const ref = map.get(sel.id);
+            if (!ref) return null;
+            return Object.assign({}, sel, {nombre: ref.nombre});
+          })
+          .filter(Boolean);
+        if (updatedStylists.length !== line.stylists.length) {
+          changed = true;
+          return Object.assign({}, line, {stylists: updatedStylists});
+        }
+        return line;
+      });
+
+      if (changed) {
+        this.stateManager.state.pos.lines = updatedLines;
+        this.stateManager.notify('linesChanged', updatedLines);
+      }
+    }
+  }
   async renderExpenses() {
     const main = Utils.$('#main');
     main.innerHTML = `
       <div class="card">
         <h3>Gastos</h3>
         <div class="pad">
-          <div class="muted">Módulo de gastos en desarrollo...</div>
+          <div class="muted">M\u00f3dulo de gastos en desarrollo...</div>
         </div>
       </div>
     `;
@@ -634,7 +1010,7 @@ class SalonPOSApp {
       <div class="card">
         <h3>Compras</h3>
         <div class="pad">
-          <div class="muted">Módulo de compras en desarrollo...</div>
+          <div class="muted">M\u00f3dulo de compras en desarrollo...</div>
         </div>
       </div>
     `;
@@ -646,7 +1022,7 @@ class SalonPOSApp {
       <div class="card">
         <h3>Proveedores</h3>
         <div class="pad">
-          <div class="muted">Módulo de proveedores en desarrollo...</div>
+          <div class="muted">M\u00f3dulo de proveedores en desarrollo...</div>
         </div>
       </div>
     `;
@@ -656,9 +1032,9 @@ class SalonPOSApp {
     const main = Utils.$('#main');
     main.innerHTML = `
       <div class="card">
-        <h3>Nómina</h3>
+        <h3>N\u00f3mina</h3>
         <div class="pad">
-          <div class="muted">Módulo de nómina en desarrollo...</div>
+          <div class="muted">M\u00f3dulo de n\u00f3mina en desarrollo...</div>
         </div>
       </div>
     `;
@@ -670,7 +1046,7 @@ class SalonPOSApp {
       <div class="card">
         <h3>Reportes</h3>
         <div class="pad">
-          <div class="muted">Módulo de reportes en desarrollo...</div>
+          <div class="muted">M\u00f3dulo de reportes en desarrollo...</div>
         </div>
       </div>
     `;
@@ -682,7 +1058,7 @@ class SalonPOSApp {
       <div class="card">
         <h3>Ajustes / Respaldo</h3>
         <div class="pad">
-          <div class="muted">Módulo de ajustes en desarrollo...</div>
+          <div class="muted">M\u00f3dulo de ajustes en desarrollo...</div>
         </div>
       </div>
     `;
@@ -730,19 +1106,29 @@ class SalonPOSApp {
     try {
       this.posLogic.snapshotTicketLines();
       // TODO: Implement printing functionality
-      Utils.toast('Función de impresión en desarrollo...', 'warn');
+      Utils.toast('Funci\u00f3n de impresi\u00f3n en desarrollo...', 'warn');
     } catch (error) {
       console.error('Error printing ticket:', error);
       Utils.toast('Error al imprimir ticket', 'err');
     }
   }
+
+  safeValue(value) {
+    const str = value == null ? '' : String(value);
+    return str
+      .replace(/&/g, '&amp;')
+      .replace(/"/g, '&quot;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+  }
+
 }
 
 // Initialize app when DOM is ready
-document.addEventListener('DOMContentLoaded', async () => {
+document.addEventListener('DOMContentLoaded', () => {
   const app = new SalonPOSApp();
   window.app = app;
-  await app.init();
+  app.init();
 });
 
 // Export for use in other modules
@@ -751,3 +1137,6 @@ if (typeof module !== 'undefined' && module.exports) {
 } else {
   window.SalonPOSApp = SalonPOSApp;
 }
+
+
+

@@ -23,13 +23,13 @@ class StateManager {
     
     this._tabs = [
       {id: 'pos', label: 'Punto de venta'},
-      {id: 'orders', label: 'Órdenes'},
+      {id: 'orders', label: '\u00d3rdenes'},
       {id: 'customers', label: 'Clientes'},
       {id: 'stylists', label: 'Estilistas / Cajeros'},
       {id: 'expenses', label: 'Gastos'},
       {id: 'purchases', label: 'Compras'},
       {id: 'suppliers', label: 'Proveedores'},
-      {id: 'payroll', label: 'Nómina'},
+      {id: 'payroll', label: 'N\u00f3mina'},
       {id: 'reports', label: 'Reportes'},
       {id: 'settings', label: 'Ajustes / Respaldo'}
     ];
@@ -64,7 +64,7 @@ class StateManager {
   }
 
   updatePos(updates) {
-    this.state.pos = {...this.state.pos, ...updates};
+    this.state.pos = Object.assign({}, this.state.pos, updates);
     this.notify('posUpdated', this.state.pos);
   }
 
@@ -85,7 +85,7 @@ class StateManager {
   }
 
   updateLine(index, updates) {
-    this.state.pos.lines[index] = {...this.state.pos.lines[index], ...updates};
+    this.state.pos.lines[index] = Object.assign({}, this.state.pos.lines[index], updates);
     this.notify('linesChanged', this.state.pos.lines);
   }
 
@@ -119,7 +119,7 @@ class StateManager {
   normalizeState() {
     const pos = this.state.pos;
     
-    // Global stylists (fuente canónica)
+    // Global stylists (fuente canonica)
     if (Array.isArray(pos.defaultStylists) && !Array.isArray(pos.stylistsGlobal)) {
       pos.stylistsGlobal = pos.defaultStylists.map(s => ({
         id: s.id, 
@@ -138,7 +138,7 @@ class StateManager {
       : (Array.isArray(pos.items) ? pos.items : (pos.lines || []));
     
     // Tips canonical
-    pos.tips = Number(pos.tips ?? pos.tipTotal ?? 0);
+    pos.tips = Number(pos.tips != null ? pos.tips : (pos.tipTotal != null ? pos.tipTotal : 0));
     pos.tipTotal = pos.tips;
     
     // Coupon canonical
@@ -202,3 +202,4 @@ if (typeof module !== 'undefined' && module.exports) {
   // Maintain backward compatibility
   window.state = stateManager.state;
 }
+

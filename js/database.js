@@ -101,7 +101,7 @@ class Database {
         id: 'main', 
         loyalty_rate: 0.02, 
         colores: {teal: '#2E9593', rose: '#746362'}, 
-        salon: 'The beauty salón by alan', 
+        salon: 'The beauty sal\u00f3n by alan', 
         firma: 'programa desarrollado por contacto@gammaconsultores.mx', 
         payment_methods: ['Efectivo','Tarjeta','Transferencia']
       });
@@ -118,7 +118,7 @@ class Database {
         img: 'file:///C:/Users/misag/OneDrive/Desktop/Imagenes%20TBS/cortes.jpg'
       });
       
-      const cortes = [['Dama con Alan',580],['Dama General',470],['Caballero con Alan',350],['Caballero General',300],['Niña',470]];
+      const cortes = [['Dama con Alan',580],['Dama General',470],['Caballero con Alan',350],['Caballero General',300],['Ni\u00f1a',470]];
       for (const [n,p] of cortes) {
         await this.put('variants', {
           id: this.uid(), 
@@ -136,7 +136,7 @@ class Database {
         img: 'file:///C:/Users/misag/OneDrive/Desktop/Imagenes%20TBS/tinte.jpg'
       });
       
-      const tinte = [['Retoque de raíz',700],['Corto',990],['Mediano',1100],['Largo',1220],['Muy largo',1340],['Extra largo',1570],['Extra largo abundante',1690]];
+      const tinte = [['Retoque de ra\u00edz',700],['Corto',990],['Mediano',1100],['Largo',1220],['Muy largo',1340],['Extra largo',1570],['Extra largo abundante',1690]];
       for (const [n,p] of tinte) {
         await this.put('variants', {
           id: this.uid(), 
@@ -155,3 +155,7 @@ if (typeof module !== 'undefined' && module.exports) {
 } else {
   window.Database = Database;
 }
+
+
+
+

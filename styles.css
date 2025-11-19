@@ -117,15 +117,15 @@ input, select, textarea{
 .warnbox{padding:10px 12px; border:1px solid var(--border); background:#fff1f2; border-radius:12px}
 .kbd{font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New";font-size:12px;background:#111;color:#fff;padding:2px 6px;border-radius:6px}
 
-/* Ensanchar campo de búsqueda de cliente y permitir fila propia */
+
 #inpPhone{ width:100%; min-width:320px; }
 .stack{ display:flex; flex-direction:column; gap:8px; }
 
-/* Selector de método de pago en el footer del ticket */
+
 .paybox{display:flex; gap:8px; align-items:center; flex-wrap:wrap}
 .paybox select, .paybox input{max-width:200px}
 
-/* --- UI polish: footer POS - tamaños iguales y alineación --- */
+
 .footer{display:flex; gap:12px; align-items:stretch}
 .footer .paybox{flex:1; display:flex; align-items:center; gap:8px}
 .footer .paybox label{min-width:48px}
@@ -137,7 +137,7 @@ input, select, textarea{
 .chip{width:100%; display:flex; align-items:center; justify-content:space-between;
       min-height:44px; text-align:left}
 
-/* Botón para cambiar imagen del producto */
+
 .tile .actions-row{display:flex; gap:8px; margin-top:8px}
 .btn.tiny{padding:6px 10px; font-size:12px; border-radius:10px}
 
@@ -163,12 +163,12 @@ input, select, textarea{
 .chip b{flex:0 0 auto; white-space:nowrap}
 .chip:hover{border-color:var(--teal); background:#f0fdfa}
 
-/* v4.6 – Ticket: espaciado y bloques por renglón */
+
 .stack{ display:flex; flex-direction:column; gap:12px }
 .card-lite{ border:1px solid var(--border); border-radius:12px; background:#fff; padding:12px; box-shadow: var(--shadow); margin-bottom:12px }
 .label-aux{ font-size:12px; color:var(--muted); display:block; margin-bottom:6px }
 
-/* v5.0 – UI refinements */
+
 .chip.selected{ border-color: var(--teal); background:#f0fdfa; box-shadow: 0 0 0 2px rgba(46,149,147,.1) inset }
 .totals-summary{ margin-top:8px; font-size:12px; color:var(--muted) }
 .report-card{ background:#fff; border:1px solid var(--border); border-radius:12px; box-shadow:var(--shadow); padding:12px; margin-bottom:12px }
@@ -176,7 +176,7 @@ input, select, textarea{
 .report-table th,.report-table td{ border-bottom:1px solid var(--border); padding:8px; text-align:left; font-size:14px }
 .report-actions{ display:flex; gap:8px; flex-wrap:wrap; margin:8px 0 }
 
-/* v5.1 – Ordenar productos/variantes */
+
 .sort-list{list-style:none; margin:0; padding:0; max-height:52vh; overflow:auto; border:1px solid var(--border); border-radius:12px; background:#fff}
 .sort-item{display:flex; align-items:center; justify-content:space-between; gap:8px; padding:10px 12px; border-bottom:1px solid var(--border)}
 .sort-item:last-child{border-bottom:none}
@@ -184,9 +184,11 @@ input, select, textarea{
 .sort-item .actions{display:flex; gap:6px}
 .handle{cursor:grab; font-size:18px; color:var(--muted); user-select:none}
 
-/* Hotfix: ocultar 'Cambiar imagen' en catálogo (solo POS) */
+
 #catalog [data-changeimg], .catalog [data-changeimg]{display:none !important;}
 
 /* Badges and advanced link for line stylists */
 .badge-inherit{ background:#2E95931a; color:#2E9593; padding:2px 6px; border-radius:999px; font-size:12px; }
 .link-advanced{ font-size:12px; text-decoration:underline; cursor:pointer; opacity:.8; }
+
+

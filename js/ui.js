@@ -4,7 +4,13 @@ class UIComponents {
   // Navigation
   static renderNav(activeTab, tabs, onTabChange) {
     const nav = Utils.$('#nav');
+    if (!nav) return;
     nav.innerHTML = '';
+
+    if (!Array.isArray(tabs) || !tabs.length) {
+      console.warn('UIComponents.renderNav: lista de pesta\\u00f1as no disponible');
+      return;
+    }
     
     tabs.forEach(tab => {
       const button = document.createElement('button');
@@ -25,7 +31,7 @@ class UIComponents {
     brand.innerHTML = `
       <div class="logo fallback" id="appLogo">BA</div>
       <div>
-        <div class="title">${salonName} — Sistema de Gestión (V1)</div>
+        <div class="title">${salonName}</div>
         <div class="muted small">programa desarrollado por <b>${firma}</b></div>
       </div>
     `;
@@ -36,7 +42,7 @@ class UIComponents {
     const year = new Date().getFullYear();
     const signature = Utils.$('.signature');
     if (signature) {
-      signature.innerHTML = `© ${year} The beauty salón by alan — <span style="color:var(--rose)">programa desarrollado por ${firma}</span>`;
+      signature.innerHTML = `&copy; ${year} The beauty sal&oacute;n by alan &mdash; <span style="color:var(--rose)">programa desarrollado por ${firma}</span>`;
     }
   }
 
@@ -115,7 +121,7 @@ class UIComponents {
     let html = '';
     
     lines.forEach((line, index) => {
-      const base = Number(line.variant?.precio || 0) * Number(line.qty || 1);
+      const base = Number((line.variant && line.variant.precio) || 0) * Number(line.qty || 1);
       const discount = Number(line.discount || 0);
       const adjust = line.manualAdjust 
         ? (line.manualAdjust.sign === '+' ? Number(line.manualAdjust.monto || 0) : -Number(line.manualAdjust.monto || 0))
@@ -125,7 +131,7 @@ class UIComponents {
       html += `
         <div class="line" data-line-index="${index}">
           <div>
-            <strong>${line.variant?.nombre || 'Producto'}</strong>
+            <strong>${(line.variant && line.variant.nombre) || 'Producto'}</strong>
             ${line.qty > 1 ? `<span class="muted">x${line.qty}</span>` : ''}
             ${line.stylists && line.stylists.length > 0 ? `
               <div class="muted small">Estilistas: ${line.stylists.map(s => s.nombre).join(', ')}</div>
@@ -139,7 +145,7 @@ class UIComponents {
           </div>
           <div class="actions">
             <button class="btn tiny" onclick="editLine(${index})">Editar</button>
-            <button class="btn tiny err" onclick="removeLine(${index})">×</button>
+            <button class="btn tiny err" onclick="removeLine(${index})">&times;</button>
           </div>
         </div>
       `;
@@ -156,7 +162,7 @@ class UIComponents {
         <div><b>${Utils.money(totals.subtotal || 0)}</b></div>
         
         ${totals.couponCut > 0 ? `
-          <div>Cupón</div>
+          <div>Cup\u00f3n</div>
           <div><b>-${Utils.money(totals.couponCut)}</b></div>
         ` : ''}
         
@@ -298,7 +304,7 @@ class UIComponents {
         <tr data-order-id="${order.id}">
           <td>${order.folio || 'N/A'}</td>
           <td>${new Date(order.fecha_hora).toLocaleDateString()}</td>
-          <td>${order.customer?.nombre || 'Cliente general'}</td>
+          <td>${(order.customer && order.customer.nombre) || 'Cliente general'}</td>
           <td>${Utils.money(order.total || 0)}</td>
           <td>
             <button class="btn tiny" onclick="viewOrder('${order.id}')">Ver</button>
@@ -330,8 +336,8 @@ class UIComponents {
             <thead>
               <tr>
                 <th>Estilista</th>
-                <th class="right">% comisión (cap 20%)</th>
-                <th class="right">Comisión</th>
+                <th class="right">% comisi\u00f3n (cap 20%)</th>
+                <th class="right">Comisi\u00f3n</th>
               </tr>
             </thead>
             <tbody>${rows}</tbody>
@@ -375,3 +381,4 @@ if (typeof module !== 'undefined' && module.exports) {
 } else {
   window.UIComponents = UIComponents;
 }
+

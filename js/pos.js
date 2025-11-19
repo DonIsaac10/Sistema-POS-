@@ -1,4 +1,4 @@
-// POS logic module
+﻿// POS logic module
 
 class POSLogic {
   constructor(stateManager, database) {
@@ -16,7 +16,7 @@ class POSLogic {
     
     // Calculate line totals
     const lines = pos.lines.map(l => {
-      const base = Number(l.variant?.precio || 0) * Number(l.qty || 1);
+      const base = Number((l.variant && l.variant.precio) || 0) * Number(l.qty || 1);
       const disc = Number(l.discount || 0);
       const adj = l.manualAdjust 
         ? (l.manualAdjust.sign === '+' ? Number(l.manualAdjust.monto || 0) : -Number(l.manualAdjust.monto || 0))
@@ -24,7 +24,7 @@ class POSLogic {
       const total = Math.max(0, base - disc + adj);
       
       if (disc > 0) hasLineDiscount = true;
-      return {...l, base, lineTotal: Number(Utils.fmtMoney(total))};
+      return Object.assign({}, l, {base: base, lineTotal: Number(Utils.fmtMoney(total))});
     });
     
     subtotal = lines.reduce((a, b) => a + b.lineTotal, 0);
@@ -76,14 +76,14 @@ class POSLogic {
       settings.prices_include_tax = true;
     }
     
-    const loyalty = settings?.loyalty_rate || 0.02;
+    const loyalty = (settings && settings.loyalty_rate) || 0.02;
     let accrueBase = subtotal;
     if (coupon || hasLineDiscount) accrueBase = 0;
     const pointsEarned = Number(Utils.fmtMoney(accrueBase * loyalty));
     
     let pointsUse = Number(pos.customerPointsUsed || 0);
     const customer = pos.customer;
-    const maxPoints = Math.min(Number(customer?.puntos || 0), Math.max(0, subtotal - couponCut));
+    const maxPoints = Math.min(Number((customer && customer.puntos) || 0), Math.max(0, subtotal - couponCut));
     
     if (pointsUse > maxPoints) pointsUse = maxPoints;
     pos.customerPointsUsed = pointsUse;
@@ -101,7 +101,7 @@ class POSLogic {
     }
 
     // Calculate IVA
-    const ivaRate = Number(settings?.iva_rate ?? 0.16);
+    const ivaRate = Number((settings && settings.iva_rate) != null ? settings.iva_rate : 0.16);
     const taxBase = Math.max(0, Number(subtotal || 0) - Number(couponCut || 0) - Number(pointsUse || 0));
     const iva = Number((taxBase * ivaRate).toFixed(2));
 
@@ -138,7 +138,7 @@ class POSLogic {
         qty: Number(qty) || 1,
         discount: 0,
         stylists: Array.isArray(this.state.pos.stylistsGlobal)
-          ? [...this.state.pos.stylistsGlobal]
+          ? this.state.pos.stylistsGlobal.slice()
           : [],
         manualAdjust: null
       };
@@ -299,7 +299,7 @@ class POSLogic {
       id: Utils.uid(),
       folio: Utils.folio(),
       fecha_hora: Utils.nowISO(),
-      customer_id: pos.customer?.id || null,
+      customer_id: (pos.customer && pos.customer.id) || null,
       customer: pos.customer,
       subtotal: totals.subtotal,
       couponCut: totals.couponCut,
@@ -311,7 +311,7 @@ class POSLogic {
       payments: pos.payments,
       stylistsGlobal: pos.stylistsGlobal,
       tipAlloc: pos.tipAlloc,
-      cashier_id: this.state.cashier?.id || null
+      cashier_id: (this.state.cashier && this.state.cashier.id) || null
     };
 
     // Save order
@@ -328,7 +328,7 @@ class POSLogic {
         discount: line.discount,
         manualAdjust: line.manualAdjust,
         stylists: line.stylists,
-        price: line.variant?.precio || 0,
+        price: (line.variant && line.variant.precio) || 0,
         base: line.base,
         lineTotal: line.lineTotal
       });
@@ -393,7 +393,7 @@ class POSLogic {
         if (countBase !== 1) return;
         
         // Reject if contains summary keywords
-        if (/\b(Subtotal|Cup[oó]n|Puntos|TOTAL|Tipo de pago|Propinas|Cerrar ticket|Monto|Efectivo|Tarjeta|Transferencia|Mixto)\b/i.test(txt)) return;
+        if (/\b(Subtotal|Cup[o\u00f3]n|Puntos|TOTAL|Tipo de pago|Propinas|Cerrar ticket|Monto|Efectivo|Tarjeta|Transferencia|Mixto)\b/i.test(txt)) return;
         
         // Reject if first line is "Ticket"
         const first = Utils.cleanTxt((txt.split(/\r?\n/)[0] || ''));
@@ -443,7 +443,7 @@ class POSLogic {
 
         if (!title && unit <= 0) return;
         lines.push({ 
-          name: title || '—', 
+          name: title || '\u2014', 
           qty, 
           unit, 
           adjust, 

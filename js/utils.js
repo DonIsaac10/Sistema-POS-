@@ -139,8 +139,14 @@ class Utils {
     };
     
     if (onOk) {
-      this.$('#mOk').onclick = () => {
-        onOk();
+      this.$('#mOk').onclick = async () => {
+        try {
+          const result = await onOk();
+          if (result === false) return;
+        } catch (error) {
+          console.error('Modal onOk error', error);
+          return;
+        }
         bd.style.display = 'none';
       };
     }
