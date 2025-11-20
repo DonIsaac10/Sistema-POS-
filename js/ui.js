@@ -42,7 +42,7 @@ class UIComponents {
     const year = new Date().getFullYear();
     const signature = Utils.$('.signature');
     if (signature) {
-      signature.innerHTML = `&copy; ${year} The beauty sal&oacute;n by alan &mdash; <span style="color:var(--rose)">programa desarrollado por ${firma}</span>`;
+      signature.innerHTML = `&copy; ${year} The Beauty Salon by Alan &mdash; <span style="color:var(--rose)">${firma}</span>`;
     }
   }
 
@@ -105,7 +105,7 @@ class UIComponents {
     stylists.forEach(stylist => {
       const isSelected = selectedStylists.some(s => s.id === stylist.id);
       html += `
-        <div class="chip ${isSelected ? 'selected' : ''}" data-stylist-id="${stylist.id}" onclick="toggleStylist('${stylist.id}')">
+        <div class="chip inline ${isSelected ? 'selected' : ''}" data-stylist-id="${stylist.id}" onclick="toggleStylist('${stylist.id}')">
           <span>${stylist.nombre}</span>
           <b>${stylist.pct || 0}%</b>
         </div>
@@ -170,9 +170,6 @@ class UIComponents {
           <div>Puntos</div>
           <div><b>-${Utils.money(totals.pointsUse)}</b></div>
         ` : ''}
-        
-        <div>IVA (${(totals.ivaRate || 0.16) * 100}%)</div>
-        <div><b>${Utils.money(totals.iva || 0)}</b></div>
         
         ${totals.tipTotal > 0 ? `
           <div>Propina</div>
@@ -282,6 +279,7 @@ class UIComponents {
       </div>
     `;
   }
+
 
   // Orders table
   static renderOrdersTable(orders, onOrderSelect) {

@@ -124,8 +124,11 @@ class Utils {
     const {onOk = null, okText = 'Guardar', cancelText = 'Cancelar'} = options;
     const bd = this.$('#modalBackdrop');
     
-    bd.innerHTML = `<div class="modal">
-      <h3>${title}</h3>
+    bd.innerHTML = `<div class="modal" style="max-height:90vh;overflow:auto">
+      <div style="display:flex;justify-content:space-between;align-items:center;padding:14px 16px;border-bottom:1px solid var(--border);position:sticky;top:0;background:#fff;z-index:1">
+        <h3 style="margin:0">${title}</h3>
+        <button id="modalClose" class="btn tiny light" style="min-width:32px;height:32px">×</button>
+      </div>
       <div class="pad">${bodyHTML}</div>
       <div class="footer">
         <button class="btn light" id="mCancel">${cancelText}</button>
@@ -134,9 +137,12 @@ class Utils {
     </div>`;
     
     bd.style.display = 'flex';
-    this.$('#mCancel').onclick = () => {
+    const closeFn = () => {
       bd.style.display = 'none';
     };
+    this.$('#mCancel').onclick = closeFn;
+    const closeBtn = this.$('#modalClose');
+    if (closeBtn) closeBtn.onclick = closeFn;
     
     if (onOk) {
       this.$('#mOk').onclick = async () => {

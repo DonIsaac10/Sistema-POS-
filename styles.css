@@ -122,9 +122,27 @@ input, select, textarea{
 .stack{ display:flex; flex-direction:column; gap:8px; }
 
 
-.paybox{display:flex; gap:8px; align-items:center; flex-wrap:wrap}
-.paybox select, .paybox input{max-width:200px}
+.paybox{
+  display:flex;
+  flex-direction:column;
+  gap:8px;
+  align-items:flex-start;
+}
+.paybox select,
+.paybox input{
+  width:100%;
+  max-width:260px;
+}
 
+.chip.inline {
+  flex-direction:row;
+  align-items:center;
+  justify-content:space-between;
+}
+.chip.inline .meta {
+  color:var(--muted);
+  font-size:12px;
+}
 
 .footer{display:flex; gap:12px; align-items:stretch}
 .footer .paybox{flex:1; display:flex; align-items:center; gap:8px}

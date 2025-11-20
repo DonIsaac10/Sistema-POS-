@@ -103,9 +103,10 @@ class POSLogic {
     // Calculate IVA
     const ivaRate = Number((settings && settings.iva_rate) != null ? settings.iva_rate : 0.16);
     const taxBase = Math.max(0, Number(subtotal || 0) - Number(couponCut || 0) - Number(pointsUse || 0));
-    const iva = Number((taxBase * ivaRate).toFixed(2));
+    const netBase = taxBase / (1 + ivaRate);
+    const iva = Number((taxBase - netBase).toFixed(2));
 
-    // Final total
+    // Final total (precios incluyen IVA)
     const total = Number((taxBase + Number(tipTotal || 0)).toFixed(2));
 
     return {
@@ -137,9 +138,7 @@ class POSLogic {
         variant,
         qty: Number(qty) || 1,
         discount: 0,
-        stylists: Array.isArray(this.state.pos.stylistsGlobal)
-          ? this.state.pos.stylistsGlobal.slice()
-          : [],
+        stylists: [],
         manualAdjust: null
       };
 
@@ -174,7 +173,7 @@ class POSLogic {
   // Apply manual adjustment to line
   applyLineAdjustment(lineIndex, amount, sign) {
     this.state.updateLine(lineIndex, {
-      manualAdjust: {monto: Number(amount), sign: sign}
+      manualAdjust: (amount > 0 ? {monto: Number(amount), sign: sign} : null)
     });
   }
 

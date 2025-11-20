@@ -18,6 +18,9 @@ class SalonPOSApp {
     this.currentTotals = null;
     this.customers = [];
     this.stylists = [];
+    this.orderFilters = {from: null, to: null, search: ''};
+    this.reportFilters = {from: null, to: null, search: '', preset: '30'};
+    this.customerSearchResults = [];
   }
 
   async init() {
@@ -68,6 +71,8 @@ class SalonPOSApp {
       this.variants = await this.database.getAll('variants');
       await this.reloadCustomers();
       await this.reloadStylists();
+      this.initOrderFilters();
+      this.initReportFilters();
       
       // Load payment methods from settings
       this.paymentMethods = (this.settings && this.settings.payment_methods) || ['Efectivo', 'Tarjeta', 'Transferencia'];
@@ -97,6 +102,105 @@ class SalonPOSApp {
     });
     this.stylists = list;
     return this.stylists;
+  }
+
+  initOrderFilters() {
+    const today = new Date();
+    const to = today.toISOString().slice(0, 10);
+    const fromDate = new Date(today);
+    fromDate.setDate(fromDate.getDate() - 7);
+    const from = fromDate.toISOString().slice(0, 10);
+    this.orderFilters = {from, to, search: ''};
+  }
+
+  initReportFilters() {
+    const today = new Date();
+    const to = today.toISOString().slice(0, 10);
+    const fromDate = new Date(today);
+    fromDate.setDate(fromDate.getDate() - 30);
+    const from = fromDate.toISOString().slice(0, 10);
+    this.reportFilters = {from, to, search: '', preset: '30'};
+  }
+
+  normalizeDateInput(value) {
+    if (!value) return '';
+    const d = new Date(value);
+    if (!isNaN(d.getTime())) {
+      return d.toISOString().slice(0, 10);
+    }
+    return '';
+  }
+
+  applyReportPreset(preset) {
+    const today = new Date();
+    let from = null;
+    let to = today.toISOString().slice(0, 10);
+
+    if (preset === '7') {
+      const d = new Date(today);
+      d.setDate(d.getDate() - 7);
+      from = d.toISOString().slice(0, 10);
+    } else if (preset === '30') {
+      const d = new Date(today);
+      d.setDate(d.getDate() - 30);
+      from = d.toISOString().slice(0, 10);
+    } else if (preset === 'ytd') {
+      const d = new Date(today.getFullYear(), 0, 1);
+      from = d.toISOString().slice(0, 10);
+    } else if (preset === 'custom') {
+      from = this.reportFilters && this.reportFilters.from || '';
+      to = this.reportFilters && this.reportFilters.to || '';
+    }
+
+    this.reportFilters = Object.assign({}, this.reportFilters, {
+      preset,
+      from,
+      to
+    });
+  }
+
+  applyOrderFilters(orders) {
+    const filters = this.orderFilters || {};
+    const from = filters.from ? new Date(filters.from + 'T00:00:00') : null;
+    const to = filters.to ? new Date(filters.to + 'T23:59:59') : null;
+    const query = (filters.search || '').toLowerCase();
+
+    return (orders || []).filter(order => {
+      const date = new Date(order.fecha_hora || order.fecha || Date.now());
+      if (from && date < from) return false;
+      if (to && date > to) return false;
+      if (query) {
+        const folio = (order.folio || '').toLowerCase();
+        const name = ((order.customer && order.customer.nombre) || 'cliente general').toLowerCase();
+        if (!folio.includes(query) && !name.includes(query)) return false;
+      }
+      return true;
+    }).sort((a, b) => {
+      const ad = new Date(a.fecha_hora || 0).getTime();
+      const bd = new Date(b.fecha_hora || 0).getTime();
+      return bd - ad;
+    });
+  }
+
+  async updateOrderFilters(patch) {
+    this.orderFilters = Object.assign({}, this.orderFilters, patch);
+    await this.renderOrders();
+  }
+
+  async resetOrderFilters() {
+    this.initOrderFilters();
+    await this.renderOrders();
+  }
+
+  async updateReportFilters(patch) {
+    this.reportFilters = Object.assign({}, this.reportFilters, patch);
+    await this.renderReports();
+  }
+
+  async resetReportFilters(preset = '30') {
+    this.initReportFilters();
+    this.reportFilters.preset = preset;
+    await this.renderReports();
   }
 
   setupEventListeners() {
@@ -148,8 +252,7 @@ class SalonPOSApp {
     };
 
     window.editLine = (lineIndex) => {
-      // TODO: Implement line editing modal
-      console.log('Edit line:', lineIndex);
+      this.openLineEditor(lineIndex);
     };
 
     window.removeLine = (lineIndex) => {
@@ -166,13 +269,19 @@ class SalonPOSApp {
     window.deleteStylist = (stylistId) => this.removeStylist(stylistId);
 
     window.viewOrder = async (orderId) => {
-      // TODO: Implement order view modal
-      console.log('View order:', orderId);
+      await this.openOrderDetail(orderId);
     };
 
     window.printOrder = async (orderId) => {
-      // TODO: Implement order printing
-      console.log('Print order:', orderId);
+      await this.printOrderTicket(orderId);
+    };
+
+    window.closeTicket = async () => {
+      await this.closeTicket();
+    };
+
+    window.resetPOS = () => {
+      this.resetPOS();
     };
 
     window.closeCommissionModal = () => {
@@ -247,8 +356,9 @@ class SalonPOSApp {
   }
 
   renderHeader() {
-    const salonName = (this.settings && this.settings.salon) || 'The beauty sal\u00f3n by alan';
-    const firma = (this.settings && this.settings.firma) || 'contacto@gammaconsultores.mx';
+    const salonName = 'The Beauty Salon by Alan';
+    const rawFirma = (this.settings && this.settings.firma) || 'contacto@gammaconsultores.mx';
+    const firma = rawFirma.replace(/programa desarrollado por\s*/i, '').trim() || 'contacto@gammaconsultores.mx';
     UIComponents.renderHeader(salonName, firma);
   }
 
@@ -331,7 +441,11 @@ class SalonPOSApp {
           <div class="card">
             <h3>Ticket</h3>
             <div class="pad">
-              <div class="ticket">
+              <div id="posCustomer"></div>
+              <div id="posStylists" style="margin-top:12px"></div>
+              <div id="posTips" style="margin-top:12px"></div>
+              <div id="posCoupon" style="margin-top:12px"></div>
+              <div class="ticket" style="margin-top:12px">
                 <div id="ticketLines"></div>
                 <div id="totals"></div>
               </div>
@@ -357,6 +471,12 @@ class SalonPOSApp {
 
     // Render catalog
     UIComponents.renderCatalog(this.products, this.variants);
+    
+    // Render customer / stylists / tips / coupon
+    this.renderCustomerBox();
+    this.renderStylistsBox();
+    this.renderTipsBox();
+    this.renderCouponBox();
     
     // Render ticket lines
     this.renderTicketLines();
@@ -438,6 +558,233 @@ class SalonPOSApp {
     this.attachPaymentEvents(totals, methods);
   }
 
+  renderCustomerBox() {
+    const container = Utils.$('#posCustomer');
+    if (!container) return;
+    const pos = this.stateManager.pos;
+    const cust = pos.customer;
+    const pointsEarned = this.currentTotals ? this.currentTotals.pointsEarned : 0;
+    const pointsAvailable = cust && cust.puntos ? Number(cust.puntos) : 0;
+
+    const resultsHTML = (this.customerSearchResults || []).slice(0, 5).map(c => `
+      <div class="chip" data-cust="${c.id}">
+        <span>${this.safeValue(c.nombre || '')}</span>
+        <b>${this.safeValue(c.celular || '')}</b>
+      </div>
+    `).join('') || '<div class="muted small">Busca por celular</div>';
+
+    container.innerHTML = `
+      <div class="card-lite">
+        <div class="row" style="align-items:flex-end; gap:8px">
+          <div style="flex:1">
+            <label>Cliente (celular)</label>
+            <input type="tel" id="custSearchPhone" placeholder="Ej. 5512345678">
+          </div>
+          <div style="flex:0 0 auto">
+            <button class="btn light" id="custBtnSearch">Buscar</button>
+          </div>
+          <div style="flex:0 0 auto">
+            <button class="btn light" id="custBtnClear">General</button>
+          </div>
+        </div>
+        <div class="muted small" style="margin-top:6px">Resultados</div>
+        <div id="custResults" class="chips">${resultsHTML}</div>
+        <div style="margin-top:8px">
+          <div class="label-aux">Cliente seleccionado</div>
+          <div><strong>${cust ? this.safeValue(cust.nombre || '') : 'Cliente general'}</strong></div>
+          <div class="muted small">Puntos: ${pointsAvailable}</div>
+          <div class="muted small">Puntos a ganar: ${pointsEarned}</div>
+        </div>
+        <div style="margin-top:8px; display:flex; gap:8px; align-items:flex-end; flex-wrap:wrap">
+          <div>
+            <label>Usar puntos</label>
+            <input type="number" id="custPointsUse" min="0" step="1" value="${Number(pos.customerPointsUsed || 0)}">
+          </div>
+          <button class="btn light" id="custApplyPoints">Aplicar puntos</button>
+        </div>
+      </div>
+    `;
+
+    const btnSearch = Utils.$('#custBtnSearch');
+    if (btnSearch) {
+      btnSearch.onclick = () => this.searchCustomerByPhone();
+    }
+    const inputPhone = Utils.$('#custSearchPhone');
+    if (inputPhone) {
+      inputPhone.onkeydown = (e) => {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          this.searchCustomerByPhone();
+        }
+      };
+    }
+    const results = Utils.$('#custResults');
+    if (results) {
+      results.onclick = (e) => {
+        const target = e.target.closest('[data-cust]');
+        if (!target) return;
+        const id = target.getAttribute('data-cust');
+        this.selectCustomerById(id);
+      };
+    }
+    const btnClear = Utils.$('#custBtnClear');
+    if (btnClear) {
+      btnClear.onclick = () => {
+        this.stateManager.setCustomer(null);
+        this.stateManager.updatePos({customerPointsUsed: 0});
+        this.renderPOS();
+      };
+    }
+    const btnApply = Utils.$('#custApplyPoints');
+    if (btnApply) {
+      btnApply.onclick = () => {
+        const val = Number(Utils.$('#custPointsUse').value || 0);
+        this.posLogic.setCustomerPointsUsed(val);
+        this.renderPOS();
+      };
+    }
+  }
+
+  async searchCustomerByPhone() {
+    const phone = (Utils.$('#custSearchPhone') && Utils.$('#custSearchPhone').value) || '';
+    const cleaned = phone.replace(/[^0-9]/g, '');
+    if (!cleaned) {
+      Utils.toast('Ingresa un celular', 'warn');
+      return;
+    }
+    const list = await this.posLogic.searchCustomersByPhone(cleaned);
+    this.customerSearchResults = list || [];
+    this.renderCustomerBox();
+  }
+
+  async selectCustomerById(id) {
+    await this.posLogic.setCustomer(id);
+    this.renderPOS();
+  }
+
+  renderStylistsBox() {
+    const container = Utils.$('#posStylists');
+    if (!container) return;
+    const pos = this.stateManager.pos;
+    const selected = pos.stylistsGlobal || [];
+    container.innerHTML = `
+      <div class="card-lite">
+        <div class="label-aux">Estilistas (por servicio)</div>
+        <div class="muted small">Selecciona estilistas dentro de cada l\u00ednea (bot\u00f3n Editar). Si eliges aqu\u00ed, se usar\u00e1n como sugerencia al agregar nuevas l\u00edneas.</div>
+        ${UIComponents.renderStylistSelector(this.stylists || [], selected)}
+      </div>
+    `;
+  }
+
+  renderTipsBox() {
+    const container = Utils.$('#posTips');
+    if (!container) return;
+    const pos = this.stateManager.pos;
+    // Estilistas elegibles: los asignados en las l\u00edneas; si no hay, usar los seleccionados globales; si tampoco, usar todos.
+    const fromLines = (pos.lines || []).flatMap(l => l.stylists || []);
+    const unique = [];
+    const seen = new Set();
+    fromLines.forEach(s => {
+      if (s && !seen.has(s.id)) {
+        unique.push(s);
+        seen.add(s.id);
+      }
+    });
+    let selectedStylists = unique;
+    if (!selectedStylists.length && Array.isArray(pos.stylistsGlobal) && pos.stylistsGlobal.length) {
+      selectedStylists = pos.stylistsGlobal;
+    }
+    if (!selectedStylists.length && Array.isArray(this.stylists)) {
+      selectedStylists = this.stylists;
+    }
+    const alloc = pos.tipAlloc || [];
+    const totalTip = alloc.reduce((s, t) => s + Number(t.monto || 0), 0);
+
+    const rows = selectedStylists.length ? selectedStylists.map(st => {
+      const found = alloc.find(t => t.stylist_id === st.id);
+      const val = found ? Number(found.monto || 0) : 0;
+      return `
+        <div class="row" style="align-items:center">
+          <div>${this.safeValue(st.nombre || '')}</div>
+          <input type="number" data-tip="${st.id}" min="0" step="0.01" value="${val.toFixed(2)}">
+        </div>
+      `;
+    }).join('') : '<div class="muted small">Selecciona estilistas (editar l\u00edneas) para asignar propina</div>';
+
+    container.innerHTML = `
+      <div class="card-lite">
+        <div class="label-aux">Propina para estilistas</div>
+        <div class="row" style="align-items:flex-end;gap:8px">
+          <div>
+            <label>Total propina</label>
+            <input type="number" id="tipTotalInput" min="0" step="0.01" value="${totalTip.toFixed(2)}">
+          </div>
+          <button class="btn light" id="tipDistribute">Distribuir entre estilistas</button>
+        </div>
+        <div style="margin-top:8px" id="tipRows">
+          ${rows}
+        </div>
+      </div>
+    `;
+
+    const btnDist = Utils.$('#tipDistribute');
+    if (btnDist) {
+      btnDist.onclick = () => this.distributeTips();
+    }
+    const tipRows = Utils.$('#tipRows');
+    if (tipRows) {
+      tipRows.oninput = (e) => {
+        const target = e.target;
+        if (target && target.getAttribute('data-tip')) {
+          const id = target.getAttribute('data-tip');
+          const val = Number(target.value || 0);
+          this.posLogic.addTipAllocation(id, val);
+          this.renderPOS();
+        }
+      };
+    }
+  }
+
+  distributeTips() {
+    const pos = this.stateManager.pos;
+    const stylists = pos.stylistsGlobal || [];
+    const total = Number(Utils.$('#tipTotalInput') ? Utils.$('#tipTotalInput').value : 0) || 0;
+    if (!stylists.length) {
+      Utils.toast('Selecciona estilistas primero', 'warn');
+      return;
+    }
+    const share = total / stylists.length;
+    stylists.forEach(s => this.posLogic.addTipAllocation(s.id, share));
+    this.renderPOS();
+  }
+
+  renderCouponBox() {
+    const container = Utils.$('#posCoupon');
+    if (!container) return;
+    const pos = this.stateManager.pos;
+    const current = pos.coupon || '';
+    container.innerHTML = `
+      <div class="card-lite">
+        <div class="label-aux">Cupón / Descuento</div>
+        <div class="row" style="align-items:flex-end; gap:8px">
+          <div style="flex:1">
+            <label>Código</label>
+            <input type="text" id="couponCode" value="${this.safeValue(current)}" placeholder="Ej. PROMO10">
+          </div>
+          <button class="btn light" id="couponApply">Aplicar</button>
+        </div>
+      </div>
+    `;
+
+    const btn = Utils.$('#couponApply');
+    if (btn) {
+      btn.onclick = async () => {
+        const code = Utils.$('#couponCode') ? Utils.$('#couponCode').value : '';
+        await this.posLogic.applyCoupon(code);
+        this.renderPOS();
+      };
+    }
+  }
   syncPaymentFormWithState(totals, methods) {
     if (!this.paymentForm) return;
     const payments = this.stateManager.pos.payments || [];
@@ -618,16 +965,204 @@ class SalonPOSApp {
 
   async renderOrders() {
     const main = Utils.$('#main');
+    if (!main) return;
+
     const orders = await this.database.getAll('pos_orders');
-    
+    const filtered = this.applyOrderFilters(orders);
+    const filters = this.orderFilters || {};
+
+    const total = filtered.reduce((sum, order) => sum + Number(order.total || 0), 0);
+    const tips = filtered.reduce((sum, order) => sum + Number(order.tipTotal || 0), 0);
+    const avg = filtered.length ? total / filtered.length : 0;
+
+    const rows = filtered.length ? filtered.map(order => {
+      const dateTxt = new Date(order.fecha_hora || order.fecha || Date.now()).toLocaleDateString('es-MX');
+      const customerName = this.safeValue((order.customer && order.customer.nombre) || 'Cliente general');
+      return `
+        <tr>
+          <td>${this.safeValue(order.folio || 'N/A')}</td>
+          <td>${dateTxt}</td>
+          <td>${customerName}</td>
+          <td>${Utils.money(order.total || 0)}</td>
+          <td>
+            <div style="display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end">
+              <button class="btn tiny" onclick="viewOrder('${order.id}')">Ver</button>
+              <button class="btn tiny light" onclick="printOrder('${order.id}')">Imprimir</button>
+            </div>
+          </td>
+        </tr>
+      `;
+    }).join('') : `
+      <tr>
+        <td colspan="5" class="center muted">No se encontraron \u00f3rdenes con los filtros actuales</td>
+      </tr>
+    `;
+
     main.innerHTML = `
       <div class="card">
         <h3>\u00d3rdenes</h3>
         <div class="pad">
-          ${UIComponents.renderOrdersTable(orders)}
+          <div class="row" style="gap:12px;flex-wrap:wrap">
+            <div>
+              <label>Del</label>
+              <input type="date" id="ordersFrom" value="${this.safeValue(filters.from || '')}">
+            </div>
+            <div>
+              <label>Al</label>
+              <input type="date" id="ordersTo" value="${this.safeValue(filters.to || '')}">
+            </div>
+            <div style="flex:1;min-width:180px">
+              <label>Buscar</label>
+              <input type="text" id="ordersSearch" placeholder="Folio o cliente" value="${this.safeValue(filters.search || '')}">
+            </div>
+            <div style="display:flex;align-items:flex-end">
+              <button class="btn light" id="ordersReset">Restablecer</button>
+            </div>
+          </div>
+
+          <div class="row" style="margin-top:16px;gap:12px;flex-wrap:wrap">
+            <div class="card-lite" style="flex:1;min-width:160px">
+              <div class="label-aux">Total tickets</div>
+              <div><strong>${filtered.length}</strong></div>
+            </div>
+            <div class="card-lite" style="flex:1;min-width:160px">
+              <div class="label-aux">Ventas filtradas</div>
+              <div><strong>${Utils.money(total)}</strong></div>
+            </div>
+            <div class="card-lite" style="flex:1;min-width:160px">
+              <div class="label-aux">Promedio ticket</div>
+              <div><strong>${Utils.money(avg)}</strong></div>
+            </div>
+            <div class="card-lite" style="flex:1;min-width:160px">
+              <div class="label-aux">Propinas</div>
+              <div><strong>${Utils.money(tips)}</strong></div>
+            </div>
+          </div>
+
+          <div style="margin-top:18px; overflow:auto">
+            <table class="table">
+              <thead>
+                <tr>
+                  <th>Folio</th>
+                  <th>Fecha</th>
+                  <th>Cliente</th>
+                  <th>Total</th>
+                  <th class="right">Acciones</th>
+                </tr>
+              </thead>
+              <tbody>${rows}</tbody>
+            </table>
+          </div>
         </div>
       </div>
     `;
+
+    this.attachOrderFilterEvents();
+  }
+
+  attachOrderFilterEvents() {
+    const fromInput = Utils.$('#ordersFrom');
+    if (fromInput) {
+      fromInput.addEventListener('change', (e) => {
+        const val = this.normalizeDateInput(e.target.value);
+        this.updateOrderFilters({from: val});
+      });
+    }
+
+    const toInput = Utils.$('#ordersTo');
+    if (toInput) {
+      toInput.addEventListener('change', (e) => {
+        const val = this.normalizeDateInput(e.target.value);
+        this.updateOrderFilters({to: val});
+      });
+    }
+
+    const searchInput = Utils.$('#ordersSearch');
+    if (searchInput) {
+      let timeout = null;
+      searchInput.addEventListener('input', (e) => {
+        if (timeout) clearTimeout(timeout);
+        timeout = setTimeout(() => {
+          this.updateOrderFilters({search: e.target.value || ''});
+        }, 250);
+      });
+    }
+
+    const resetBtn = Utils.$('#ordersReset');
+    if (resetBtn) {
+      resetBtn.addEventListener('click', (e) => {
+        e.preventDefault();
+        this.resetOrderFilters();
+      });
+    }
+  }
+
+  attachReportFilterEvents(orders, expenses) {
+    const presetSelect = Utils.$('#reportPreset');
+    if (presetSelect) {
+      presetSelect.addEventListener('change', (e) => {
+        const val = e.target.value || '30';
+        this.applyReportPreset(val);
+        this.updateReportFilters({preset: val, from: this.reportFilters.from, to: this.reportFilters.to});
+      });
+    }
+
+    const fromInput = Utils.$('#reportFrom');
+    if (fromInput) {
+      fromInput.addEventListener('change', (e) => {
+        this.updateReportFilters({from: this.normalizeDateInput(e.target.value), preset: 'custom'});
+      });
+    }
+
+    const toInput = Utils.$('#reportTo');
+    if (toInput) {
+      toInput.addEventListener('change', (e) => {
+        this.updateReportFilters({to: this.normalizeDateInput(e.target.value), preset: 'custom'});
+      });
+    }
+
+    const searchInput = Utils.$('#reportSearch');
+    if (searchInput) {
+      let timeout = null;
+      searchInput.addEventListener('input', (e) => {
+        if (timeout) clearTimeout(timeout);
+        timeout = setTimeout(() => {
+          this.updateReportFilters({search: e.target.value || ''});
+        }, 250);
+      });
+    }
+
+    const resetBtn = Utils.$('#reportReset');
+    if (resetBtn) {
+      resetBtn.addEventListener('click', (e) => {
+        e.preventDefault();
+        this.resetReportFilters();
+      });
+    }
+
+    const exportBtn = Utils.$('#reportExport');
+    if (exportBtn) {
+      exportBtn.addEventListener('click', (e) => {
+        e.preventDefault();
+        this.exportReportData(orders, expenses);
+      });
+    }
+
+    const importBtn = Utils.$('#reportImport');
+    const importInput = Utils.$('#reportImportFile');
+    if (importBtn && importInput) {
+      importBtn.addEventListener('click', (e) => {
+        e.preventDefault();
+        importInput.value = '';
+        importInput.click();
+      });
+      importInput.addEventListener('change', (e) => {
+        const file = e.target.files && e.target.files[0];
+        if (file) {
+          this.importExpensesFile(file);
+        }
+      });
+    }
   }
 
   async renderCustomers() {
@@ -1042,14 +1577,249 @@ class SalonPOSApp {
 
   async renderReports() {
     const main = Utils.$('#main');
+    if (!main) return;
+
+    const orders = await this.database.getAll('pos_orders');
+    const expenses = await this.database.getAll('expenses');
+    const filters = this.reportFilters || {};
+    const from = filters.from ? new Date(filters.from + 'T00:00:00') : null;
+    const to = filters.to ? new Date(filters.to + 'T23:59:59') : null;
+    const q = (filters.search || '').toLowerCase();
+
+    const matchOrder = (order) => {
+      const date = new Date(order.fecha_hora || order.fecha || Date.now());
+      if (from && date < from) return false;
+      if (to && date > to) return false;
+      if (q) {
+        const folio = (order.folio || '').toLowerCase();
+        const name = ((order.customer && order.customer.nombre) || 'cliente general').toLowerCase();
+        if (!folio.includes(q) && !name.includes(q)) return false;
+      }
+      return true;
+    };
+
+    const matchExpense = (expense) => {
+      const date = new Date(expense.fecha || expense.fecha_hora || Date.now());
+      if (from && date < from) return false;
+      if (to && date > to) return false;
+      if (q) {
+        const concept = ((expense.nombre || expense.descripcion || '') + ' ' + (expense.categoria || '')).toLowerCase();
+        if (!concept.includes(q)) return false;
+      }
+      return true;
+    };
+
+    const filteredOrders = (orders || []).filter(matchOrder).sort((a, b) => {
+      const ad = new Date(a.fecha_hora || a.fecha || 0).getTime();
+      const bd = new Date(b.fecha_hora || b.fecha || 0).getTime();
+      return bd - ad;
+    });
+
+    const filteredExpenses = (expenses || []).filter(matchExpense).sort((a, b) => {
+      const ad = new Date(a.fecha || a.fecha_hora || 0).getTime();
+      const bd = new Date(b.fecha || b.fecha_hora || 0).getTime();
+      return bd - ad;
+    });
+
+    const rawIva = Number(this.settings && this.settings.iva_rate);
+    const ivaRateSetting = Number.isFinite(rawIva) && rawIva > 0 ? rawIva : 0.16;
+
+    const tips = filteredOrders.reduce((sum, order) => sum + Number(order.tipTotal || 0), 0);
+    const grossSales = filteredOrders.reduce((sum, order) => {
+      const total = Number(order.total || 0);
+      const tipLine = Number(order.tipTotal || 0);
+      return sum + Math.max(0, total - tipLine);
+    }, 0);
+    // IVA: todos los precios incluyen impuesto, se calcula como 16% de los ingresos brutos
+    const ivaSum = Number((grossSales * ivaRateSetting).toFixed(2));
+    const netSales = grossSales - ivaSum;
+    const expenseTotal = filteredExpenses.reduce((sum, exp) => sum + Number(exp.monto || exp.total || 0), 0);
+    const netIncome = netSales - expenseTotal;
+    const count = filteredOrders.length;
+    const avg = count ? grossSales / count : 0;
+
+    const byDay = {};
+    filteredOrders.forEach(order => {
+      const key = (order.fecha_hora || order.fecha || '').slice(0, 10) || 'sin-fecha';
+      if (!byDay[key]) {
+        byDay[key] = {total: 0, count: 0};
+      }
+      byDay[key].total += Number(order.total || 0);
+      byDay[key].count += 1;
+    });
+
+    const cashFlow = {};
+    filteredOrders.forEach(order => {
+      const key = (order.fecha_hora || order.fecha || '').slice(0, 10) || 'sin-fecha';
+      if (!cashFlow[key]) cashFlow[key] = {in: 0, out: 0};
+      cashFlow[key].in += Number(order.total || 0);
+    });
+    filteredExpenses.forEach(exp => {
+      const key = (exp.fecha || exp.fecha_hora || '').slice(0, 10) || 'sin-fecha';
+      if (!cashFlow[key]) cashFlow[key] = {in: 0, out: 0};
+      cashFlow[key].out += Number(exp.monto || exp.total || 0);
+    });
+
+    const rows = Object.keys(byDay).sort((a, b) => {
+      return new Date(b).getTime() - new Date(a).getTime();
+    }).map(dateKey => {
+      const info = byDay[dateKey];
+      const label = new Date(dateKey).toLocaleDateString('es-MX');
+      return `
+        <tr>
+          <td>${label}</td>
+          <td>${info.count}</td>
+          <td>${Utils.money(info.total)}</td>
+          <td>${Utils.money(info.total / info.count || 0)}</td>
+        </tr>
+      `;
+    }).join('') || '<tr><td colspan="4" class="center muted">Sin datos</td></tr>';
+
+    const cashRows = Object.keys(cashFlow).sort((a, b) => {
+      return new Date(b).getTime() - new Date(a).getTime();
+    }).map(dateKey => {
+      const info = cashFlow[dateKey];
+      const label = new Date(dateKey).toLocaleDateString('es-MX');
+      const net = info.in - info.out;
+      return `
+        <tr>
+          <td>${label}</td>
+          <td>${Utils.money(info.in)}</td>
+          <td>${Utils.money(info.out)}</td>
+          <td class="${net >= 0 ? 'success' : 'danger'}">${Utils.money(net)}</td>
+        </tr>
+      `;
+    }).join('') || '<tr><td colspan="4" class="center muted">Sin datos</td></tr>';
+
+    this.lastReportData = {orders: filteredOrders, expenses: filteredExpenses};
+
     main.innerHTML = `
       <div class="card">
-        <h3>Reportes</h3>
+        <h3>Reportes (filtrado)</h3>
         <div class="pad">
-          <div class="muted">M\u00f3dulo de reportes en desarrollo...</div>
+          <div class="row" style="gap:12px;flex-wrap:wrap">
+            <div>
+              <label>Periodo</label>
+              <select id="reportPreset">
+                <option value="7"${filters.preset === '7' ? ' selected' : ''}>\u00daltimos 7 d\u00edas</option>
+                <option value="30"${(!filters.preset || filters.preset === '30') ? ' selected' : ''}>\u00daltimos 30 d\u00edas</option>
+                <option value="ytd"${filters.preset === 'ytd' ? ' selected' : ''}>A\u00f1o en curso</option>
+                <option value="custom"${filters.preset === 'custom' ? ' selected' : ''}>Personalizado</option>
+              </select>
+            </div>
+            <div>
+              <label>Del</label>
+              <input type="date" id="reportFrom" value="${this.safeValue(filters.from || '')}">
+            </div>
+            <div>
+              <label>Al</label>
+              <input type="date" id="reportTo" value="${this.safeValue(filters.to || '')}">
+            </div>
+            <div style="flex:1;min-width:200px">
+              <label>Buscar</label>
+              <input type="text" id="reportSearch" placeholder="Folio, cliente o gasto" value="${this.safeValue(filters.search || '')}">
+            </div>
+            <div style="display:flex;align-items:flex-end">
+              <button class="btn light" id="reportReset">Restablecer</button>
+            </div>
+          </div>
+
+          <div class="row" style="margin-top:12px;gap:8px;flex-wrap:wrap">
+            <button class="btn light" id="reportExport">Exportar CSV</button>
+            <button class="btn light" id="reportImport">Importar gastos</button>
+            <input type="file" id="reportImportFile" class="hidden" accept="application/json,text/json" style="display:none">
+            <div class="muted small">La importaci\u00f3n acepta un arreglo JSON con campos: fecha, monto, categoria, descripcion.</div>
+          </div>
+
+          <div class="row" style="margin-top:16px;gap:12px;flex-wrap:wrap">
+            <div class="card-lite" style="flex:1;min-width:160px">
+              <div class="label-aux">Ingresos brutos</div>
+              <div><strong>${Utils.money(grossSales)}</strong></div>
+            </div>
+            <div class="card-lite" style="flex:1;min-width:160px">
+              <div class="label-aux">IVA incluido</div>
+              <div><strong>${Utils.money(ivaSum)}</strong></div>
+            </div>
+            <div class="card-lite" style="flex:1;min-width:160px">
+              <div class="label-aux">Ingresos netos</div>
+              <div><strong>${Utils.money(netSales)}</strong></div>
+            </div>
+            <div class="card-lite" style="flex:1;min-width:160px">
+              <div class="label-aux">Propinas</div>
+              <div><strong>${Utils.money(tips)}</strong></div>
+            </div>
+            <div class="card-lite" style="flex:1;min-width:160px">
+              <div class="label-aux">Gastos</div>
+              <div><strong>${Utils.money(expenseTotal)}</strong></div>
+            </div>
+            <div class="card-lite" style="flex:1;min-width:160px">
+              <div class="label-aux">Utilidad</div>
+              <div class="${netIncome >= 0 ? 'success' : 'danger'}"><strong>${Utils.money(netIncome)}</strong></div>
+            </div>
+          </div>
+
+          <h4>Estado de resultados</h4>
+          <table class="table">
+            <tbody>
+              <tr>
+                <td>Ingresos brutos</td>
+                <td class="right">${Utils.money(grossSales)}</td>
+              </tr>
+              <tr>
+                <td>IVA trasladado (informativo)</td>
+                <td class="right">${Utils.money(ivaSum)}</td>
+              </tr>
+              <tr>
+                <td>Ingresos netos (sin IVA)</td>
+                <td class="right">${Utils.money(netSales)}</td>
+              </tr>
+              <tr>
+                <td>Gastos operativos</td>
+                <td class="right">-${Utils.money(expenseTotal)}</td>
+              </tr>
+              <tr>
+                <td>Propinas (pas-through)</td>
+                <td class="right">${Utils.money(tips)}</td>
+              </tr>
+              <tr>
+                <td><strong>Utilidad neta</strong></td>
+                <td class="right"><strong>${Utils.money(netIncome)}</strong></td>
+              </tr>
+            </tbody>
+          </table>
+
+          <h4>Flujo de efectivo</h4>
+          <table class="table">
+            <thead>
+              <tr>
+                <th>Fecha</th>
+                <th>Entradas</th>
+                <th>Salidas</th>
+                <th>Neto</th>
+              </tr>
+            </thead>
+            <tbody>${cashRows}</tbody>
+          </table>
+
+          <h4>Desglose diario</h4>
+          <div style="overflow:auto">
+            <table class="table">
+              <thead>
+                <tr>
+                  <th>Fecha</th>
+                  <th>Tickets</th>
+                  <th>Total</th>
+                  <th>Promedio</th>
+                </tr>
+              </thead>
+              <tbody>${rows}</tbody>
+            </table>
+          </div>
         </div>
       </div>
     `;
+
+    this.attachReportFilterEvents(filteredOrders, filteredExpenses);
   }
 
   async renderSettings() {
@@ -1062,6 +1832,273 @@ class SalonPOSApp {
         </div>
       </div>
     `;
+  }
+
+  async openOrderDetail(orderId) {
+    try {
+      const order = await this.database.getById('pos_orders', orderId);
+      if (!order) {
+        Utils.toast('Orden no encontrada', 'warn');
+        return;
+      }
+      const allLines = await this.database.getAll('pos_lines');
+      const lines = allLines.filter(line => line.order_id === orderId);
+      const allTips = await this.database.getAll('pos_tips');
+      const tips = allTips.filter(t => t.order_id === orderId);
+      const stylistMap = new Map((this.stylists || []).map(s => [s.id, s.nombre]));
+
+      const linesHTML = lines.length ? lines.map(line => {
+        const stylists = Array.isArray(line.stylists) && line.stylists.length
+          ? line.stylists.map(s => this.safeValue(s.nombre || '')).join(', ')
+          : 'Sin estilistas';
+        return `
+          <tr>
+            <td>${this.safeValue(line.variant && line.variant.nombre || 'Producto')}</td>
+            <td class="right">${Number(line.qty || 1)}</td>
+            <td class="right">${Utils.money(line.price || line.variant && line.variant.precio || 0)}</td>
+            <td class="right">${Utils.money(line.lineTotal || 0)}</td>
+            <td class="small muted">${stylists}</td>
+          </tr>
+        `;
+      }).join('') : '<tr><td colspan="5" class="center muted">Sin renglones</td></tr>';
+
+      const payHTML = (order.payments || []).length ? order.payments.map(pay => `
+        <div class="row" style="justify-content:space-between">
+          <div>${this.safeValue(pay.metodo || 'Pago')}</div>
+          <div><strong>${Utils.money(pay.monto || 0)}</strong></div>
+        </div>
+      `).join('') : '<div class="muted small">Sin pagos registrados</div>';
+
+      const tipsHTML = tips.length ? tips.map(t => {
+        const name = stylistMap.get(t.stylist_id) || t.stylist_id || 'Estilista';
+        return `
+        <div class="row" style="justify-content:space-between">
+          <div>${this.safeValue(name)}</div>
+          <div><strong>${Utils.money(t.monto || 0)}</strong></div>
+        </div>
+      `;
+      }).join('') : '<div class="muted small">Sin propinas registradas</div>';
+
+      const infoHTML = `
+        <div class="stack">
+          <div class="card-lite">
+            <div class="label-aux">Folio</div>
+            <div><strong>${this.safeValue(order.folio || 'N/A')}</strong></div>
+          </div>
+          <div class="card-lite">
+            <div class="label-aux">Fecha</div>
+            <div>${new Date(order.fecha_hora || order.fecha || Date.now()).toLocaleString('es-MX')}</div>
+          </div>
+          <div class="card-lite">
+            <div class="label-aux">Cliente</div>
+            <div>${this.safeValue((order.customer && order.customer.nombre) || 'Cliente general')}</div>
+          </div>
+          <div class="card-lite">
+            <div class="label-aux">Total</div>
+            <div><strong>${Utils.money(order.total || 0)}</strong></div>
+          </div>
+        </div>
+
+        <h4>Productos</h4>
+        <div style="overflow:auto">
+          <table class="table">
+            <thead>
+              <tr>
+                <th>Concepto</th>
+                <th class="right">Cant.</th>
+                <th class="right">Precio</th>
+                <th class="right">Importe</th>
+                <th>Estilistas</th>
+              </tr>
+            </thead>
+            <tbody>${linesHTML}</tbody>
+          </table>
+        </div>
+
+        <h4>Pagos</h4>
+        ${payHTML}
+
+        <h4 style="margin-top:16px">Propinas</h4>
+        ${tipsHTML}
+      `;
+
+      Utils.showModal('Detalle del ticket', infoHTML, {
+        cancelText: 'Cerrar'
+      });
+    } catch (error) {
+      console.error('Detalle de orden', error);
+      Utils.toast('No se pudo cargar la orden', 'err');
+    }
+  }
+
+  async printOrderTicket(orderId) {
+    const order = await this.database.getById('pos_orders', orderId);
+    if (!order) {
+      Utils.toast('Orden no encontrada', 'warn');
+      return;
+    }
+    Utils.toast('Funci\u00f3n de impresi\u00f3n en desarrollo...', 'warn');
+  }
+
+  openLineEditor(index) {
+    const pos = this.stateManager.pos;
+    const line = pos.lines[index];
+    if (!line) {
+      Utils.toast('Producto no encontrado', 'warn');
+      return;
+    }
+
+    const variantName = this.safeValue((line.variant && line.variant.nombre) || 'Producto');
+    const qty = Number(line.qty || 1);
+    const discount = Number(line.discount || 0);
+    const manual = line.manualAdjust || {monto: 0, sign: '+'};
+    const notes = Array.isArray(line.stylists) && line.stylists.length
+      ? line.stylists.map(s => this.safeValue(s.nombre || '')).join(', ')
+      : 'Sin asignaci\u00f3n';
+
+    const stylistsOptions = (this.stylists || []).map(stylist => {
+      const checked = line.stylists && line.stylists.some(s => s.id === stylist.id);
+      return `
+        <label class="row" style="align-items:center;gap:6px">
+          <input type="checkbox" value="${stylist.id}" ${checked ? 'checked' : ''}>
+          <span>${this.safeValue(stylist.nombre || '')} (${stylist.pct || 0}%)</span>
+        </label>
+      `;
+    }).join('') || '<div class="muted small">No hay estilistas definidos</div>';
+
+    Utils.showModal(
+      `Editar ${variantName}`,
+      `
+        <div class="stack">
+          <div>
+            <label>Cantidad</label>
+            <input type="number" id="lineQty" min="1" step="1" value="${qty}">
+          </div>
+          <div>
+            <label>Descuento</label>
+            <input type="number" id="lineDiscount" min="0" step="0.01" value="${discount}">
+          </div>
+          <div>
+            <label>Ajuste manual</label>
+            <div class="row" style="gap:8px">
+              <select id="lineAdjustSign">
+                <option value="+" ${manual.sign === '+' ? 'selected' : ''}>Suma</option>
+                <option value="-" ${manual.sign === '-' ? 'selected' : ''}>Resta</option>
+              </select>
+              <input type="number" id="lineAdjustAmount" min="0" step="0.01" value="${Number(manual.monto || 0)}">
+            </div>
+          </div>
+          <div>
+            <label>Estilistas asignados</label>
+            <div id="lineStylists">${stylistsOptions}</div>
+          </div>
+          <div class="muted small">Actual: ${notes}</div>
+        </div>
+      `,
+      {
+        okText: 'Guardar',
+        cancelText: 'Cancelar',
+        onOk: async () => {
+          try {
+            await this.applyLineEditor(index);
+            Utils.toast('L\u00ednea actualizada', 'ok');
+            this.renderTicketLines();
+            this.renderTotals();
+            this.renderPaymentMethods();
+            return true;
+          } catch (error) {
+            console.error('Actualizar l\u00ednea', error);
+            Utils.toast(error.message || 'No se pudo guardar', 'err');
+            return false;
+          }
+        }
+      }
+    );
+  }
+
+  exportReportData(orders, expenses) {
+    const rows = ['Tipo,Folio/ID,Fecha,Nombre,Total'];
+    (orders || []).forEach(order => {
+      const date = new Date(order.fecha_hora || order.fecha || Date.now()).toISOString();
+      rows.push([
+        'Orden',
+        `"${(order.folio || '').replace(/"/g, '""')}"`,
+        date,
+        `"${(((order.customer && order.customer.nombre) || 'Cliente general')).replace(/"/g, '""')}"`,
+        Number(order.total || 0).toFixed(2)
+      ].join(','));
+    });
+
+    (expenses || []).forEach(exp => {
+      const date = new Date(exp.fecha || exp.fecha_hora || Date.now()).toISOString();
+      rows.push([
+        'Gasto',
+        `"${(exp.id || '').replace(/"/g, '""')}"`,
+        date,
+        `"${(((exp.nombre || exp.descripcion || '') + ' ' + (exp.categoria || '')).trim()).replace(/"/g, '""')}"`,
+        -Number(exp.monto || exp.total || 0).toFixed(2)
+      ].join(','));
+    });
+
+    const csv = rows.join('\n');
+    Utils.downloadFile(`reportes_${Date.now()}.csv`, csv, 'text/csv');
+  }
+
+  async importExpensesFile(file) {
+    try {
+      const text = await file.text();
+      const data = JSON.parse(text);
+      if (!Array.isArray(data)) {
+        throw new Error('Formato no soportado');
+      }
+      for (const entry of data) {
+        const payload = {
+          id: this.database.uid(),
+          nombre: (entry.nombre || entry.descripcion || 'Gasto').toString(),
+          descripcion: entry.descripcion || '',
+          categoria: entry.categoria || 'General',
+          monto: Number(entry.monto || 0),
+          fecha: entry.fecha || new Date().toISOString().slice(0, 10)
+        };
+        await this.database.put('expenses', payload);
+      }
+      Utils.toast('Gastos importados', 'ok');
+      await this.renderReports();
+    } catch (error) {
+      console.error('Import expenses', error);
+      Utils.toast('No se pudo importar el archivo', 'err');
+    }
+  }
+
+  async applyLineEditor(index) {
+    const pos = this.stateManager.pos;
+    const line = pos.lines[index];
+    if (!line) throw new Error('L\u00ednea no encontrada');
+
+    const qty = Math.max(1, Number(Utils.$('#lineQty').value || 1));
+    const discount = Math.max(0, Number(Utils.$('#lineDiscount').value || 0));
+    const sign = Utils.$('#lineAdjustSign').value === '-' ? '-' : '+';
+    const amount = Math.max(0, Number(Utils.$('#lineAdjustAmount').value || 0));
+
+    const stylistsContainer = Utils.$('#lineStylists');
+    const checkboxes = stylistsContainer ? stylistsContainer.querySelectorAll('input[type="checkbox"]') : [];
+    const selectedIds = Array.from(checkboxes)
+      .filter(input => input.checked)
+      .map(input => input.value);
+
+    const stylistsGlobal = this.stylists || [];
+    const newStylists = stylistsGlobal.filter(s => selectedIds.includes(s.id))
+      .map(s => ({id: s.id, nombre: s.nombre, pct: s.pct}));
+
+    const updates = {
+      qty,
+      discount,
+      manualAdjust: amount > 0 ? {sign, monto: amount} : null,
+      stylists: newStylists
+    };
+
+    this.posLogic.updateLine(index, updates);
+    await this.renderPOS();
   }
 
   async closeTicket() {
@@ -1137,6 +2174,10 @@ if (typeof module !== 'undefined' && module.exports) {
 } else {
   window.SalonPOSApp = SalonPOSApp;
 }
+
+
+
+  
 
 
 
