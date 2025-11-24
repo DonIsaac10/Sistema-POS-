@@ -127,6 +127,11 @@ class UIComponents {
         ? (line.manualAdjust.sign === '+' ? Number(line.manualAdjust.monto || 0) : -Number(line.manualAdjust.monto || 0))
         : 0;
       const total = Math.max(0, base - discount + adjust);
+      const cap = Number(UIComponents.commissionCap || 20);
+      const comm = (line.stylists || []).reduce((sum, st) => {
+        const pct = Math.min(Number(st.pct || 0), cap);
+        return sum + (total * (pct / 100));
+      }, 0);
 
       html += `
         <div class="line" data-line-index="${index}">
@@ -142,9 +147,10 @@ class UIComponents {
             ${discount > 0 ? `<div>Desc: ${Utils.money(discount)}</div>` : ''}
             ${adjust !== 0 ? `<div>Ajuste: ${Utils.money(adjust)}</div>` : ''}
             <div><strong>${Utils.money(total)}</strong></div>
+            ${comm > 0 ? `<div class="small muted">Comisi\u00f3n estilistas: ${Utils.money(comm)}</div>` : ''}
           </div>
           <div class="actions">
-            <button class="btn tiny" onclick="editLine(${index})">Editar</button>
+            <button class="btn tiny" onclick="editLine(${index})">Estilista</button>
             <button class="btn tiny err" onclick="removeLine(${index})">&times;</button>
           </div>
         </div>
@@ -170,10 +176,19 @@ class UIComponents {
           <div>Puntos</div>
           <div><b>-${Utils.money(totals.pointsUse)}</b></div>
         ` : ''}
+        ${totals.globalDiscount > 0 ? `
+          <div>Descuento global</div>
+          <div><b>-${totals.globalDiscountType === 'percent' ? totals.globalDiscount + '%' : Utils.money(totals.globalDiscount)}</b></div>
+        ` : ''}
         
         ${totals.tipTotal > 0 ? `
           <div>Propina</div>
           <div><b>${Utils.money(totals.tipTotal)}</b></div>
+        ` : ''}
+
+        ${totals.commissionTotal > 0 ? `
+          <div>Comisi\u00f3n estilistas</div>
+          <div><b>${Utils.money(totals.commissionTotal)}</b></div>
         ` : ''}
         
         <div><strong>TOTAL</strong></div>

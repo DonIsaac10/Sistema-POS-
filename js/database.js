@@ -1,6 +1,6 @@
 // Database operations module
 const DB_NAME = 'salon_ba_v1';
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 const STORES = [
   'settings','cashiers','customers','stylists','products','variants',
   'coupons','pos_orders','pos_lines','pos_tips','payments',
@@ -33,6 +33,18 @@ class Database {
             }
           }
         });
+
+        // Add new fields to settings if missing
+        if (d.objectStoreNames.contains('settings')) {
+          try {
+            const store = ev.target.transaction.objectStore('settings');
+            if (!store.indexNames || !store.indexNames.contains('by_name')) {
+              store.createIndex('by_name', 'salon', {unique: false});
+            }
+          } catch (e) {
+            // noop
+          }
+        }
       };
       
       req.onsuccess = () => {
@@ -99,7 +111,9 @@ class Database {
     if (s.length === 0) {
       await this.put('settings', {
         id: 'main', 
-        loyalty_rate: 0.02, 
+        loyalty_rate: 0.02,
+        iva_rate: 0.16,
+        commission_cap: 20,
         colores: {teal: '#2E9593', rose: '#746362'}, 
         salon: 'The beauty sal\u00f3n by alan', 
         firma: 'programa desarrollado por contacto@gammaconsultores.mx', 
@@ -155,6 +169,7 @@ if (typeof module !== 'undefined' && module.exports) {
 } else {
   window.Database = Database;
 }
+
 
 
 

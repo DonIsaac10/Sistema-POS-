@@ -21,6 +21,402 @@ class SalonPOSApp {
     this.orderFilters = {from: null, to: null, search: ''};
     this.reportFilters = {from: null, to: null, search: '', preset: '30'};
     this.customerSearchResults = [];
+    this.expenseFilters = {from: null, to: null, category: '', status: 'all', search: ''};
+    this.purchaseFilters = {from: null, to: null, supplier: '', status: 'all', search: ''};
+  }
+
+  // Nueva n�mina: calcula base + comisiones + propinas por periodo y permite registrar pagos pendientes/pagados
+  async renderPayroll2() {
+    const main = Utils.$('#main');
+    if (!main) return;
+
+    const filters = this.payrollFilters || {};
+    const from = filters.from ? new Date(filters.from + 'T00:00:00') : null;
+    const to = filters.to ? new Date(filters.to + 'T23:59:59') : null;
+    const stylistId = filters.stylist || '';
+    const statusFilter = filters.status || 'all';
+    const q = (filters.search || '').toLowerCase();
+
+    const entries = await this.database.getAll('payroll');
+    const orders = await this.database.getAll('pos_orders');
+    const lines = await this.database.getAll('pos_lines');
+    const tips = await this.database.getAll('pos_tips');
+    const stylistMap = new Map(this.stylists.map(s => [s.id, s]));
+    const orderDates = new Map((orders || []).map(o => [o.id, o.fecha_hora || o.fecha || '']));
+    const commissionCap = Number((this.settings && this.settings.commission_cap) || 20);
+    // Frecuencias configurables
+    const baseFreq = (this.settings && this.settings.payroll_base_freq) || 'quincenal'; // semanal | quincenal | mensual
+    const commFreq = (this.settings && this.settings.payroll_comm_freq) || 'semanal'; // semanal | quincenal | mensual
+    const tipFreq = (this.settings && this.settings.payroll_tip_freq) || 'semanal';
+
+    const inRange = (dateStr) => {
+      const d = new Date(dateStr || Date.now());
+      if (from && d < from) return false;
+      if (to && d > to) return false;
+      return true;
+    };
+
+    const match = (row) => {
+      const date = new Date(row.fecha_hora || row.fecha || row.created_at || Date.now());
+      if (from && date < from) return false;
+      if (to && date > to) return false;
+      if (stylistId && row.stylist_id !== stylistId) return false;
+      if (statusFilter !== 'all') {
+        const st = (row.status || 'pendiente').toLowerCase();
+        if (st !== statusFilter) return false;
+      }
+      if (q) {
+        const txt = `${row.concepto || ''} ${row.notas || ''} ${row.metodo || ''}`.toLowerCase();
+        if (!txt.includes(q)) return false;
+      }
+      return true;
+    };
+
+    const filteredEntries = (entries || []).filter(match).sort((a, b) => {
+      const ad = new Date(a.fecha_hora || a.fecha || a.created_at || 0).getTime();
+      const bd = new Date(b.fecha_hora || b.fecha || b.created_at || 0).getTime();
+      return bd - ad;
+    });
+
+    const totalPagado = filteredEntries.reduce((s, r) => s + (r.status === 'pagado' ? Number(r.commission || r.monto || r.amount || 0) : 0), 0);
+    const totalPendiente = filteredEntries.reduce((s, r) => s + (r.status === 'pagado' ? 0 : Number(r.commission || r.monto || r.amount || 0)), 0);
+
+    const optionsStylists = [`<option value="">Todos los estilistas</option>`]
+      .concat(this.stylists.map(s => `<option value="${s.id}" ${s.id === stylistId ? 'selected' : ''}>${this.safeValue(s.nombre || '')}</option>`))
+      .join('');
+
+    const paymentOpts = (this.paymentMethods || ['Efectivo','Tarjeta','Transferencia'])
+      .map(m => `<option value="${this.safeValue(m)}">${this.safeValue(m)}</option>`).join('');
+
+    const freqFactor = (freq, days) => {
+      if (freq === 'semanal') return 7 / days;       // ajusta base semanal al rango
+      if (freq === 'quincenal') return 15 / days;    // ajusta base quincenal al rango
+      if (freq === 'mensual') return 30 / days;      // aproximado
+      return 1;
+    };
+
+    const rangeDays = (() => {
+      if (!from || !to) return 1;
+      return Math.max(1, Math.round((to - from) / (1000 * 60 * 60 * 24)) + 1);
+    })();
+
+    const payables = this.stylists.map(st => {
+      const baseFull = Number(st.base_salary || 0);
+      // prorrateo de base seg�n frecuencia y rango
+      let base = baseFull;
+      if (rangeDays > 0) {
+        if (baseFreq === 'semanal') base = baseFull * Math.min(1, rangeDays / 7);
+        if (baseFreq === 'quincenal') base = baseFull * Math.min(1, rangeDays / 15);
+        if (baseFreq === 'mensual') base = baseFull * Math.min(1, rangeDays / 30);
+      }
+      let comm = 0;
+      let tipSum = 0;
+
+      (lines || []).forEach(line => {
+        if (!Array.isArray(line.stylists)) return;
+        const od = orderDates.get(line.order_id);
+        if (!od || !inRange(od)) return;
+        if (!line.lineTotal) return;
+        // s�lo contar comisiones si coincide frecuencia (si se quisiera filtrar por semana vs quincena, se usa el rango ya)
+        line.stylists.forEach(ls => {
+          if (ls.id === st.id) {
+            const pct = Math.min(Number(ls.pct || 0), commissionCap);
+            comm += Number(line.lineTotal || 0) * (pct / 100);
+          }
+        });
+      });
+
+      (tips || []).forEach(t => {
+        if (t.stylist_id !== st.id) return;
+        const td = t.fecha_hora || t.fecha;
+        if (!inRange(td)) return;
+        tipSum += Number(t.monto || 0);
+      });
+
+      const paid = (entries || []).reduce((sum, r) => {
+        const date = r.fecha_hora || r.fecha || r.created_at;
+        if (!inRange(date)) return sum;
+        if (r.stylist_id !== st.id) return sum;
+        if ((r.status || 'pendiente') !== 'pagado') return sum;
+        return sum + Number(r.commission || r.monto || r.amount || 0);
+      }, 0);
+
+      const total = base + comm + tipSum;
+      const pending = Math.max(0, total - paid);
+      return {id: st.id, nombre: st.nombre, base, comm, tipSum, total, paid, pending};
+    }).filter(p => !stylistId || p.id === stylistId);
+
+    const summaryHTML = payables.map(p => `
+      <tr data-sty="${p.id}">
+        <td>${this.safeValue(p.nombre || '')}</td>
+        <td class="right">${Utils.money(p.base)}</td>
+        <td class="right">${Utils.money(p.comm)}</td>
+        <td class="right">${Utils.money(p.tipSum)}</td>
+        <td class="right"><b>${Utils.money(p.total)}</b></td>
+        <td class="right">${Utils.money(p.paid)}</td>
+        <td class="right">${Utils.money(p.pending)}</td>
+        <td class="right">
+          ${p.pending > 0 ? `<button class="btn tiny" data-action="pay-pending" data-id="${p.id}">Registrar pendiente</button>` : ''}
+        </td>
+      </tr>
+    `).join('') || '<tr><td colspan="8" class="center muted">Sin estilistas en el rango</td>';
+
+    const rowsHTML = filteredEntries.map(row => {
+      const amt = Number(row.commission || row.monto || row.amount || 0);
+      const status = (row.status || 'pendiente').toLowerCase();
+      const sty = stylistMap.get(row.stylist_id);
+      const styName = this.safeValue(row.stylist_nombre || (sty && sty.nombre) || 'N/D');
+      const date = (row.fecha_hora || row.fecha || row.created_at || '').slice(0, 10);
+      const method = this.safeValue(row.metodo || row.method || 'N/D');
+      const concept = this.safeValue(row.concepto || 'Pago n�mina');
+      const note = this.safeValue(row.notas || '');
+      return `
+        <tr data-id="${row.id}">
+          <td>${date}</td>
+          <td>${styName}</td>
+          <td>${concept}</td>
+          <td class="right">${Utils.money(amt)}</td>
+          <td>${status === 'pagado' ? '<span class="ok">Pagado</span>' : '<span class="warn">Pendiente</span>'}</td>
+          <td>${method}</td>
+          <td>${note}</td>
+          <td class="right">
+            ${status !== 'pagado' ? `<button class="btn tiny" data-action="pay">Marcar pagado</button>` : ''}
+            <button class="btn tiny err" data-action="del">&times;</button>
+          </td>
+        </tr>
+      `;
+    }).join('') || '<tr><td colspan="8" class="center muted">Sin registros</td>';
+
+    main.innerHTML = `
+      <div class="card">
+        <h3>N�mina</h3>
+        <div class="pad stack">
+          <div class="row" style="flex-wrap:wrap; gap:8px">
+            <div>
+              <label>Del</label>
+              <input type="date" id="payrollFrom" value="${filters.from || ''}">
+            </div>
+            <div>
+              <label>Al</label>
+              <input type="date" id="payrollTo" value="${filters.to || ''}">
+            </div>
+            <div>
+              <label>Estilista</label>
+              <select id="payrollStylistFilter">${optionsStylists}</select>
+            </div>
+            <div>
+              <label>Estado</label>
+              <select id="payrollStatus">
+                <option value="all" ${statusFilter === 'all' ? 'selected' : ''}>Todos</option>
+                <option value="pendiente" ${statusFilter === 'pendiente' ? 'selected' : ''}>Pendiente</option>
+                <option value="pagado" ${statusFilter === 'pagado' ? 'selected' : ''}>Pagado</option>
+              </select>
+            </div>
+            <div style="flex:1; min-width:180px">
+              <label>Buscar</label>
+              <input type="text" id="payrollSearch" placeholder="Concepto, notas, m�todo" value="${filters.search || ''}">
+            </div>
+            <button class="btn" id="payrollApply">Filtrar</button>
+          </div>
+
+          <div class="card" style="background:#f9fbfb">
+            <h4>Resumen por estilista (base + comisiones + propinas)</h4>
+            <div style="overflow:auto">
+              <table class="table">
+                <thead>
+                  <tr>
+                    <th>Estilista</th>
+                    <th class="right">Base</th>
+                    <th class="right">Comisiones</th>
+                    <th class="right">Propinas</th>
+                    <th class="right">Total generado</th>
+                    <th class="right">Pagado</th>
+                    <th class="right">Pendiente</th>
+                    <th class="right">Acciones</th>
+                  </tr>
+                </thead>
+                <tbody>${summaryHTML}</tbody>
+              </table>
+            </div>
+          </div>
+
+          <div class="row" style="gap:16px; flex-wrap:wrap">
+            <div class="pill">Pendiente (pagos registrados): <strong>${Utils.money(totalPendiente)}</strong></div>
+            <div class="pill ok">Pagado (pagos registrados): <strong>${Utils.money(totalPagado)}</strong></div>
+            <div class="pill ok">Total registros: <strong>${Utils.money(totalPendiente + totalPagado)}</strong></div>
+          </div>
+
+          <div class="card muted" style="background:#f9fbfb">
+            <div class="row" style="flex-wrap:wrap; gap:10px">
+              <div>
+                <label>Estilista</label>
+                <select id="payrollStylist">${optionsStylists.replace('Todos los estilistas','Seleccione')}</select>
+              </div>
+              <div>
+                <label>Fecha</label>
+                <input type="date" id="payrollDate" value="${new Date().toISOString().slice(0,10)}">
+              </div>
+              <div>
+                <label>Monto</label>
+                <input type="number" id="payrollAmount" min="0" step="0.01" placeholder="0.00">
+              </div>
+              <div style="flex:1; min-width:200px">
+                <label>Concepto</label>
+                <input type="text" id="payrollConcept" placeholder="Pago n�mina / bono">
+              </div>
+              <div>
+                <label>M�todo</label>
+                <select id="payrollMethod">${paymentOpts}</select>
+              </div>
+              <div>
+                <label>Estado</label>
+                <select id="payrollStatusNew">
+                  <option value="pagado">Pagado</option>
+                  <option value="pendiente">Pendiente</option>
+                </select>
+              </div>
+              <div style="flex:1; min-width:200px">
+                <label>Notas</label>
+                <input type="text" id="payrollNotes" placeholder="Referencia, folio, etc.">
+              </div>
+              <button class="btn" id="payrollAdd">Agregar</button>
+            </div>
+          </div>
+
+          <div style="overflow:auto">
+            <table class="table" id="payrollTable">
+              <thead>
+                <tr>
+                  <th>Fecha</th>
+                  <th>Estilista</th>
+                  <th>Concepto</th>
+                  <th class="right">Monto</th>
+                  <th>Estado</th>
+                  <th>M�todo</th>
+                  <th>Notas</th>
+                  <th class="right">Acciones</th>
+                </tr>
+              </thead>
+              <tbody>${rowsHTML}</tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    `;
+
+    const applyFilters = () => {
+      this.payrollFilters = {
+        from: Utils.$('#payrollFrom').value || '',
+        to: Utils.$('#payrollTo').value || '',
+        stylist: Utils.$('#payrollStylistFilter').value || '',
+        status: Utils.$('#payrollStatus').value || 'all',
+        search: Utils.$('#payrollSearch').value || ''
+      };
+      this.renderPayroll2();
+    };
+
+    const applyBtn = Utils.$('#payrollApply');
+    if (applyBtn) applyBtn.onclick = applyFilters;
+
+    const addBtn = Utils.$('#payrollAdd');
+    if (addBtn) {
+      addBtn.onclick = async () => {
+        try {
+          const styId = Utils.$('#payrollStylist').value;
+          const sty = stylistMap.get(styId);
+          const styName = this.safeValue(sty ? sty.nombre : '');
+          const fecha = Utils.$('#payrollDate').value || new Date().toISOString().slice(0,10);
+          const amount = Number(Utils.$('#payrollAmount').value || 0);
+          const concept = Utils.cleanTxt(Utils.$('#payrollConcept').value || 'N�mina');
+          const method = Utils.$('#payrollMethod').value || 'Efectivo';
+          const status = Utils.$('#payrollStatusNew').value || 'pagado';
+          const notes = Utils.cleanTxt(Utils.$('#payrollNotes').value || '');
+
+          if (!styId) {
+            Utils.toast('Selecciona un estilista', 'warn');
+            return;
+          }
+          if (amount <= 0) {
+            Utils.toast('Monto inválido', 'warn');
+            return;
+          }
+
+          await this.database.put('payroll', {
+            id: Utils.uid(),
+            stylist_id: styId,
+            stylist_nombre: styName,
+            fecha: fecha,
+            fecha_hora: fecha + 'T00:00:00',
+            commission: amount,
+            concepto: concept,
+            metodo: method,
+            status,
+            notas: notes,
+            tipo: 'manual',
+            created_at: Utils.nowISO()
+          });
+
+          Utils.toast('Registro agregado', 'ok');
+          await this.renderPayroll2();
+        } catch (error) {
+          console.error('Agregar n�mina', error);
+          Utils.toast('No se pudo agregar el registro', 'err');
+        }
+      };
+    }
+
+    const table = Utils.$('#payrollTable');
+    if (table) {
+      table.addEventListener('click', async (ev) => {
+        const btn = ev.target.closest('button[data-action]');
+        if (!btn) return;
+        const tr = btn.closest('tr[data-id]');
+        const id = tr ? tr.getAttribute('data-id') : null;
+        if (!id) return;
+        if (btn.dataset.action === 'pay') {
+          const rec = entries.find(r => r.id === id);
+          if (!rec) return;
+          rec.status = 'pagado';
+          rec.paid_at = Utils.nowISO();
+          await this.database.put('payroll', rec);
+          Utils.toast('Marcado como pagado', 'ok');
+          await this.renderPayroll2();
+        } else if (btn.dataset.action === 'del') {
+          if (!window.confirm('�Eliminar registro?')) return;
+          await this.database.delete('payroll', id);
+          Utils.toast('Registro eliminado', 'warn');
+          await this.renderPayroll2();
+        }
+      });
+    }
+
+    const summaryTable = main.querySelector('.card table');
+    if (summaryTable) {
+      summaryTable.addEventListener('click', async (ev) => {
+        const btn = ev.target.closest('button[data-action="pay-pending"]');
+        if (!btn) return;
+        const id = btn.dataset.id;
+        const pay = payables.find(p => p.id === id);
+        if (!pay || pay.pending <= 0) return;
+        const fecha = new Date().toISOString().slice(0,10);
+        await this.database.put('payroll', {
+          id: Utils.uid(),
+          stylist_id: id,
+          stylist_nombre: this.safeValue(stylistMap.get(id) ? stylistMap.get(id).nombre : ''),
+          fecha,
+          fecha_hora: fecha + 'T00:00:00',
+          commission: pay.pending,
+          concepto: 'N�mina periodo',
+          metodo: 'Efectivo',
+          status: 'pendiente',
+          tipo: 'auto',
+          notas: `Base+comisiones+propinas ${filters.from || ''} a ${filters.to || ''}`,
+          created_at: Utils.nowISO()
+        });
+        Utils.toast('Pendiente registrado', 'ok');
+        await this.renderPayroll2();
+      });
+    }
   }
 
   async init() {
@@ -64,7 +460,42 @@ class SalonPOSApp {
       const settings = await this.database.getById('settings', 'main');
       if (settings) {
         this.settings = settings;
+      } else {
+        this.settings = {id: 'main'};
       }
+      let settingsChanged = false;
+      if (this.settings.loyalty_rate == null) {
+        this.settings.loyalty_rate = 0.02;
+        settingsChanged = true;
+      }
+      if (this.settings.iva_rate == null) {
+        this.settings.iva_rate = 0.16;
+        settingsChanged = true;
+      }
+      if (this.settings.commission_cap == null) {
+        this.settings.commission_cap = 20;
+        settingsChanged = true;
+      }
+      if (!this.settings.payroll_base_freq) {
+        this.settings.payroll_base_freq = 'quincenal';
+        settingsChanged = true;
+      }
+      if (!this.settings.payroll_comm_freq) {
+        this.settings.payroll_comm_freq = 'semanal';
+        settingsChanged = true;
+      }
+      if (!this.settings.payroll_tip_freq) {
+        this.settings.payroll_tip_freq = 'semanal';
+        settingsChanged = true;
+      }
+      if (!Array.isArray(this.settings.payment_methods) || this.settings.payment_methods.length === 0) {
+        this.settings.payment_methods = ['Efectivo', 'Tarjeta', 'Transferencia'];
+        settingsChanged = true;
+      }
+      if (settingsChanged) {
+        await this.database.put('settings', this.settings);
+      }
+      UIComponents.commissionCap = Number(this.settings.commission_cap || 20);
 
       // Load initial data for POS
       this.products = await this.database.getAll('products');
@@ -252,7 +683,7 @@ class SalonPOSApp {
     };
 
     window.editLine = (lineIndex) => {
-      this.openLineEditor(lineIndex);
+      this.openLineStylist(lineIndex);
     };
 
     window.removeLine = (lineIndex) => {
@@ -403,7 +834,10 @@ class SalonPOSApp {
           await this.renderSuppliers();
           break;
         case 'payroll':
-          await this.renderPayroll();
+          await this.renderPayroll2 ? await this.renderPayroll2() : await this.renderPayroll();
+          break;
+        case 'coupons':
+          await this.renderCoupons();
           break;
         case 'reports':
           await this.renderReports();
@@ -425,6 +859,7 @@ class SalonPOSApp {
     if (!main) return;
 
     const pos = this.stateManager.pos;
+    UIComponents.commissionCap = Number((this.settings && this.settings.commission_cap) || 20);
     const totals = await this.posLogic.calcTotals();
     this.currentTotals = totals;
 
@@ -442,13 +877,30 @@ class SalonPOSApp {
             <h3>Ticket</h3>
             <div class="pad">
               <div id="posCustomer"></div>
-              <div id="posStylists" style="margin-top:12px"></div>
-              <div id="posTips" style="margin-top:12px"></div>
-              <div id="posCoupon" style="margin-top:12px"></div>
               <div class="ticket" style="margin-top:12px">
                 <div id="ticketLines"></div>
-                <div id="totals"></div>
               </div>
+            </div>
+          </div>
+
+          <div class="card" id="cardTips">
+            <h3>Propina</h3>
+            <div class="pad">
+              <div id="posTips"></div>
+            </div>
+          </div>
+
+          <div class="card" id="cardCoupon">
+            <h3>Cup\u00f3n / Descuento</h3>
+            <div class="pad">
+              <div id="posCoupon"></div>
+            </div>
+          </div>
+
+          <div class="card" id="cardTotals">
+            <h3>Resumen</h3>
+            <div class="pad">
+              <div id="totals"></div>
             </div>
           </div>
           
@@ -474,16 +926,15 @@ class SalonPOSApp {
     
     // Render customer / stylists / tips / coupon
     this.renderCustomerBox();
-    this.renderStylistsBox();
     this.renderTipsBox();
     this.renderCouponBox();
     
     // Render ticket lines
     this.renderTicketLines();
     
-    // Render totals
+    // Render totals (separate card)
     await this.renderTotals(totals);
-    
+
     // Render payment methods
     await this.renderPaymentMethods(totals);
   }
@@ -747,7 +1198,19 @@ class SalonPOSApp {
 
   distributeTips() {
     const pos = this.stateManager.pos;
-    const stylists = pos.stylistsGlobal || [];
+    const fromLines = (pos.lines || []).flatMap(l => l.stylists || []);
+    const uniq = [];
+    const seen = new Set();
+    fromLines.forEach(s => {
+      if (s && !seen.has(s.id)) {
+        uniq.push(s);
+        seen.add(s.id);
+      }
+    });
+    let stylists = uniq;
+    if (!stylists.length && Array.isArray(pos.stylistsGlobal)) {
+      stylists = pos.stylistsGlobal;
+    }
     const total = Number(Utils.$('#tipTotalInput') ? Utils.$('#tipTotalInput').value : 0) || 0;
     if (!stylists.length) {
       Utils.toast('Selecciona estilistas primero', 'warn');
@@ -763,6 +1226,8 @@ class SalonPOSApp {
     if (!container) return;
     const pos = this.stateManager.pos;
     const current = pos.coupon || '';
+    const globalDisc = pos.globalDiscount || 0;
+    const globalDiscType = pos.globalDiscountType || 'amount';
     container.innerHTML = `
       <div class="card-lite">
         <div class="label-aux">Cupón / Descuento</div>
@@ -773,6 +1238,20 @@ class SalonPOSApp {
           </div>
           <button class="btn light" id="couponApply">Aplicar</button>
         </div>
+        <div class="row" style="align-items:flex-end; gap:8px; margin-top:8px">
+          <div style="flex:1">
+            <label>Descuento global</label>
+            <input type="number" id="globalDiscount" min="0" step="0.01" value="${Number(globalDisc || 0)}">
+          </div>
+          <div style="flex:0 0 auto">
+            <label>&nbsp;</label>
+            <select id="globalDiscountType">
+              <option value="amount"${globalDiscType === 'amount' ? ' selected' : ''}>Monto</option>
+              <option value="percent"${globalDiscType === 'percent' ? ' selected' : ''}>%</option>
+            </select>
+          </div>
+          <button class="btn light" id="globalDiscountApply">Aplicar descuento</button>
+        </div>
       </div>
     `;
 
@@ -781,6 +1260,16 @@ class SalonPOSApp {
       btn.onclick = async () => {
         const code = Utils.$('#couponCode') ? Utils.$('#couponCode').value : '';
         await this.posLogic.applyCoupon(code);
+        this.renderPOS();
+      };
+    }
+
+    const btnDisc = Utils.$('#globalDiscountApply');
+    if (btnDisc) {
+      btnDisc.onclick = () => {
+        const val = Number(Utils.$('#globalDiscount') ? Utils.$('#globalDiscount').value : 0) || 0;
+        const type = Utils.$('#globalDiscountType') ? Utils.$('#globalDiscountType').value : 'amount';
+        this.stateManager.updatePos({globalDiscount: val, globalDiscountType: type});
         this.renderPOS();
       };
     }
@@ -1290,7 +1779,7 @@ class SalonPOSApp {
           <input type="text" id="customerName" placeholder="Nombre y apellido" value="${this.safeValue(customer && customer.nombre)}">
         </div>
         <div>
-          <label>Tel\u00E9fono / celular</label>
+          <label>celular</label>
           <input type="tel" id="customerPhone" placeholder="5551234567" value="${this.safeValue(customer && customer.celular)}">
         </div>
       </div>
@@ -1399,12 +1888,16 @@ class SalonPOSApp {
       </div>
       <div class="row" style="margin-top:8px">
         <div>
-          <label>Tel\u00E9fono</label>
+          <label>Celular</label>
           <input type="tel" id="stylistPhone" placeholder="5551234567" value="${this.safeValue(stylist && stylist.celular)}">
         </div>
         <div>
           <label>% Comisi\u00F3n</label>
           <input type="number" id="stylistPct" min="0" max="100" step="0.5" value="${this.safeValue((stylist && stylist.pct) != null ? stylist.pct : (stylist && stylist.porcentaje) != null ? stylist.porcentaje : 0)}">
+        </div>
+        <div>
+          <label>Sueldo base</label>
+          <input type="number" id="stylistBase" min="0" step="0.01" placeholder="0.00" value="${this.safeValue((stylist && stylist.base_salary) != null ? stylist.base_salary : 0)}">
         </div>
       </div>
     `, {
@@ -1423,6 +1916,7 @@ class SalonPOSApp {
     const roleEl = Utils.$('#stylistRole');
     const phoneEl = Utils.$('#stylistPhone');
     const pctEl = Utils.$('#stylistPct');
+    const baseEl = Utils.$('#stylistBase');
 
     const nombre = Utils.cleanTxt((nameEl ? nameEl.value : '') || '');
     if (!nombre) {
@@ -1430,13 +1924,16 @@ class SalonPOSApp {
       return false;
     }
 
-    const pct = Utils.clamp(Number((pctEl ? pctEl.value : '') || 0), 0, 100);
+    const cap = Number((this.settings && this.settings.commission_cap) || 20);
+    const pct = Utils.clamp(Number((pctEl ? pctEl.value : '') || 0), 0, cap);
+    const baseSalary = Math.max(0, Number((baseEl ? baseEl.value : '') || 0));
     const record = {
       id: stylistId || undefined,
       nombre,
       rol: Utils.cleanTxt((roleEl ? roleEl.value : '') || ''),
       celular: Utils.cleanTxt((phoneEl ? phoneEl.value : '') || ''),
-      pct
+      pct,
+      base_salary: baseSalary
     };
 
     try {
@@ -1485,6 +1982,7 @@ class SalonPOSApp {
   syncPosStylistsFromMaster() {
     const pos = this.stateManager.pos;
     const map = new Map(this.stylists.map(s => [s.id, s]));
+    const cap = Number((this.settings && this.settings.commission_cap) || 20);
 
     if (Array.isArray(pos.stylistsGlobal)) {
       const synced = pos.stylistsGlobal
@@ -1496,7 +1994,7 @@ class SalonPOSApp {
             : (ref.porcentaje != null ? ref.porcentaje : (sel.pct != null ? sel.pct : 0));
           return Object.assign({}, sel, {
             nombre: ref.nombre,
-            pct: Number(pctValue)
+            pct: Utils.clamp(Number(pctValue), 0, cap)
           });
         })
         .filter(Boolean);
@@ -1511,7 +2009,7 @@ class SalonPOSApp {
           .map(sel => {
             const ref = map.get(sel.id);
             if (!ref) return null;
-            return Object.assign({}, sel, {nombre: ref.nombre});
+            return Object.assign({}, sel, {nombre: ref.nombre, pct: Utils.clamp(Number(sel.pct != null ? sel.pct : (ref.pct != null ? ref.pct : 0)), 0, cap)});
           })
           .filter(Boolean);
         if (updatedStylists.length !== line.stylists.length) {
@@ -1529,50 +2027,611 @@ class SalonPOSApp {
   }
   async renderExpenses() {
     const main = Utils.$('#main');
+    if (!main) return;
+
+    const filters = this.expenseFilters || {};
+    const from = filters.from ? new Date(filters.from + 'T00:00:00') : null;
+    const to = filters.to ? new Date(filters.to + 'T23:59:59') : null;
+    const catFilter = filters.category || '';
+    const statusFilter = filters.status || 'all';
+    const q = (filters.search || '').toLowerCase();
+
+    const expenses = await this.database.getAll('expenses');
+    const categories = await this.database.getAll('expense_categories');
+
+    const match = (exp) => {
+      const date = new Date(exp.fecha || exp.fecha_hora || Date.now());
+      if (from && date < from) return false;
+      if (to && date > to) return false;
+      if (catFilter && exp.categoria !== catFilter) return false;
+      if (statusFilter !== 'all') {
+        const st = (exp.status || 'ejecutado').toLowerCase();
+        if (st !== statusFilter) return false;
+      }
+      if (q) {
+        const txt = `${exp.nombre || ''} ${exp.descripcion || ''} ${exp.categoria || ''}`.toLowerCase();
+        if (!txt.includes(q)) return false;
+      }
+      return true;
+    };
+
+    const filtered = (expenses || []).filter(match).sort((a, b) => {
+      const ad = new Date(a.fecha || a.fecha_hora || 0).getTime();
+      const bd = new Date(b.fecha || b.fecha_hora || 0).getTime();
+      return bd - ad;
+    });
+
+    const totalEjecutado = filtered.reduce((s, e) => s + ((e.status || 'ejecutado') === 'ejecutado' ? Number(e.monto || e.total || 0) : 0), 0);
+    const totalPendiente = filtered.reduce((s, e) => s + ((e.status || 'ejecutado') === 'pendiente' ? Number(e.monto || e.total || 0) : 0), 0);
+
+    const optionsCat = [`<option value="">Todas</option>`]
+      .concat(categories.map(c => `<option value="${c.nombre}" ${c.nombre === catFilter ? 'selected' : ''}>${this.safeValue(c.nombre || '')}</option>`))
+      .join('');
+
+    const rowsHTML = filtered.map(exp => {
+      const status = (exp.status || 'ejecutado').toLowerCase();
+      return `
+        <tr data-id="${exp.id}">
+          <td>${(exp.fecha || '').slice(0,10)}</td>
+          <td>${this.safeValue(exp.nombre || '')}</td>
+          <td>${this.safeValue(exp.categoria || '')}</td>
+          <td class="right">${Utils.money(exp.monto || exp.total || 0)}</td>
+          <td>${status === 'pendiente' ? '<span class="warn">Pendiente</span>' : '<span class="ok">Ejecutado</span>'}</td>
+          <td class="small">${this.safeValue(exp.descripcion || '')}</td>
+          <td class="right">
+            ${status === 'pendiente' ? `<button class="btn tiny" data-action="exec">Ejecutar</button>` : ''}
+            <button class="btn tiny err" data-action="del">&times;</button>
+          </td>
+        </tr>
+      `;
+    }).join('') || '<tr><td colspan="7" class="center muted">Sin gastos</td>';
+
     main.innerHTML = `
       <div class="card">
         <h3>Gastos</h3>
-        <div class="pad">
-          <div class="muted">M\u00f3dulo de gastos en desarrollo...</div>
+        <div class="pad stack">
+          <div class="row" style="flex-wrap:wrap; gap:8px">
+            <div>
+              <label>Del</label>
+              <input type="date" id="expFrom" value="${filters.from || ''}">
+            </div>
+            <div>
+              <label>Al</label>
+              <input type="date" id="expTo" value="${filters.to || ''}">
+            </div>
+            <div>
+              <label>Categor\u00eda</label>
+              <select id="expCategory">${optionsCat}</select>
+            </div>
+            <div>
+              <label>Estado</label>
+              <select id="expStatus">
+                <option value="all" ${statusFilter === 'all' ? 'selected' : ''}>Todos</option>
+                <option value="ejecutado" ${statusFilter === 'ejecutado' ? 'selected' : ''}>Ejecutado</option>
+                <option value="pendiente" ${statusFilter === 'pendiente' ? 'selected' : ''}>Pendiente</option>
+              </select>
+            </div>
+            <div style="flex:1; min-width:180px">
+              <label>Buscar</label>
+              <input type="text" id="expSearch" placeholder="Nombre, descripci\u00f3n, categor\u00eda" value="${filters.search || ''}">
+            </div>
+            <button class="btn" id="expApply">Filtrar</button>
+          </div>
+
+          <div class="row" style="gap:16px; flex-wrap:wrap">
+            <div class="pill">Pendiente: <strong>${Utils.money(totalPendiente)}</strong></div>
+            <div class="pill ok">Ejecutado: <strong>${Utils.money(totalEjecutado)}</strong></div>
+          </div>
+
+          <div class="card muted" style="background:#f9fbfb">
+            <div class="row" style="flex-wrap:wrap; gap:10px">
+              <div>
+                <label>Nombre</label>
+                <input type="text" id="expName" placeholder="Renta, servicios...">
+              </div>
+              <div>
+                <label>Fecha</label>
+                <input type="date" id="expDate" value="${new Date().toISOString().slice(0,10)}">
+              </div>
+              <div>
+                <label>Monto</label>
+                <input type="number" id="expAmount" min="0" step="0.01" placeholder="0.00">
+              </div>
+              <div>
+                <label>Categor\u00eda</label>
+                <select id="expCatSelect">${optionsCat}</select>
+              </div>
+              <div>
+                <label>Estado</label>
+                <select id="expStatusNew">
+                  <option value="ejecutado">Ejecutado</option>
+                  <option value="pendiente">Programado</option>
+                </select>
+              </div>
+              <div style="flex:1; min-width:200px">
+                <label>Descripci\u00f3n</label>
+                <input type="text" id="expDesc" placeholder="Detalle, folio, referencia">
+              </div>
+              <button class="btn" id="expAdd">Agregar</button>
+            </div>
+            <div class="row" style="gap:8px; margin-top:8px">
+              <div>
+                <label>Nueva categor\u00eda</label>
+                <input type="text" id="expCatNew" placeholder="Nombre categor\u00eda">
+              </div>
+              <button class="btn tiny" id="expCatAdd">Agregar categor\u00eda</button>
+            </div>
+          </div>
+
+          <div style="overflow:auto">
+            <table class="table" id="expTable">
+              <thead>
+                <tr>
+                  <th>Fecha</th>
+                  <th>Nombre</th>
+                  <th>Categor\u00eda</th>
+                  <th class="right">Monto</th>
+                  <th>Estado</th>
+                  <th>Descripci\u00f3n</th>
+                  <th class="right">Acciones</th>
+                </tr>
+              </thead>
+              <tbody>${rowsHTML}</tbody>
+            </table>
+          </div>
         </div>
       </div>
     `;
+
+    const applyFilters = () => {
+      this.expenseFilters = {
+        from: Utils.$('#expFrom').value || '',
+        to: Utils.$('#expTo').value || '',
+        category: Utils.$('#expCategory').value || '',
+        status: Utils.$('#expStatus').value || 'all',
+        search: Utils.$('#expSearch').value || ''
+      };
+      this.renderExpenses();
+    };
+    const applyBtn = Utils.$('#expApply');
+    if (applyBtn) applyBtn.onclick = applyFilters;
+
+    const addBtn = Utils.$('#expAdd');
+    if (addBtn) {
+      addBtn.onclick = async () => {
+        try {
+          const name = Utils.cleanTxt(Utils.$('#expName').value || '');
+          const date = Utils.$('#expDate').value || new Date().toISOString().slice(0,10);
+          const amount = Number(Utils.$('#expAmount').value || 0);
+          const cat = Utils.$('#expCatSelect').value || '';
+          const status = Utils.$('#expStatusNew').value || 'ejecutado';
+          const desc = Utils.cleanTxt(Utils.$('#expDesc').value || '');
+
+          if (!name) return Utils.toast('Nombre requerido', 'warn');
+          if (amount <= 0) return Utils.toast('Monto inv\u00e1lido', 'warn');
+
+          await this.database.put('expenses', {
+            id: this.database.uid(),
+            nombre: name,
+            descripcion: desc,
+            categoria: cat,
+            monto: amount,
+            fecha: date,
+            status
+          });
+          Utils.toast('Gasto guardado', 'ok');
+          await this.renderExpenses();
+        } catch (err) {
+          console.error('Add expense', err);
+          Utils.toast('No se pudo guardar', 'err');
+        }
+      };
+    }
+
+    const addCatBtn = Utils.$('#expCatAdd');
+    if (addCatBtn) {
+      addCatBtn.onclick = async () => {
+        const val = Utils.cleanTxt(Utils.$('#expCatNew').value || '');
+        if (!val) return Utils.toast('Nombre de categor\u00eda requerido', 'warn');
+        await this.database.put('expense_categories', {id: this.database.uid(), nombre: val});
+        Utils.toast('Categor\u00eda agregada', 'ok');
+        await this.renderExpenses();
+      };
+    }
+
+    const table = Utils.$('#expTable');
+    if (table) {
+      table.addEventListener('click', async (ev) => {
+        const btn = ev.target.closest('button[data-action]');
+        if (!btn) return;
+        const tr = btn.closest('tr[data-id]');
+        const id = tr ? tr.getAttribute('data-id') : null;
+        if (!id) return;
+        if (btn.dataset.action === 'del') {
+          if (!window.confirm('\u00bfEliminar gasto?')) return;
+          await this.database.delete('expenses', id);
+          Utils.toast('Gasto eliminado', 'warn');
+          await this.renderExpenses();
+        } else if (btn.dataset.action === 'exec') {
+          const exp = expenses.find(e => e.id === id);
+          if (!exp) return;
+          exp.status = 'ejecutado';
+          if (!exp.fecha || exp.fecha > new Date().toISOString().slice(0,10)) {
+            exp.fecha = new Date().toISOString().slice(0,10);
+          }
+          await this.database.put('expenses', exp);
+          Utils.toast('Gasto ejecutado', 'ok');
+          await this.renderExpenses();
+        }
+      });
+    }
   }
 
   async renderPurchases() {
     const main = Utils.$('#main');
+    if (!main) return;
+
+    const filters = this.purchaseFilters || {};
+    const from = filters.from ? new Date(filters.from + 'T00:00:00') : null;
+    const to = filters.to ? new Date(filters.to + 'T23:59:59') : null;
+    const supplierFilter = filters.supplier || '';
+    const statusFilter = filters.status || 'all';
+    const q = (filters.search || '').toLowerCase();
+
+    const purchases = await this.database.getAll('purchases');
+    const suppliers = await this.database.getAll('suppliers');
+    const supplierMap = new Map(suppliers.map(s => [s.id, s.nombre]));
+
+    const match = (p) => {
+      const date = new Date(p.fecha || p.fecha_hora || Date.now());
+      if (from && date < from) return false;
+      if (to && date > to) return false;
+      if (supplierFilter && p.supplier_id !== supplierFilter) return false;
+      if (statusFilter !== 'all') {
+        const st = (p.status || 'ejecutado').toLowerCase();
+        if (st !== statusFilter) return false;
+      }
+      if (q) {
+        const txt = `${p.nombre || ''} ${p.descripcion || ''} ${p.categoria || ''} ${p.proveedor || ''}`.toLowerCase();
+        if (!txt.includes(q)) return false;
+      }
+      return true;
+    };
+
+    const filtered = (purchases || []).filter(match).sort((a, b) => {
+      const ad = new Date(a.fecha || a.fecha_hora || 0).getTime();
+      const bd = new Date(b.fecha || b.fecha_hora || 0).getTime();
+      return bd - ad;
+    });
+
+    const totalEjecutado = filtered.reduce((s, e) => s + ((e.status || 'ejecutado') === 'ejecutado' ? Number(e.monto || e.total || 0) : 0), 0);
+    const totalPendiente = filtered.reduce((s, e) => s + ((e.status || 'ejecutado') === 'pendiente' ? Number(e.monto || e.total || 0) : 0), 0);
+
+    const supplierOptions = [`<option value="">Todos</option>`]
+      .concat(suppliers.map(s => `<option value="${s.id}" ${s.id === supplierFilter ? 'selected' : ''}>${this.safeValue(s.nombre || '')}</option>`))
+      .join('');
+
+    const rowsHTML = filtered.map(p => {
+      const status = (p.status || 'ejecutado').toLowerCase();
+      const prov = this.safeValue(p.proveedor || supplierMap.get(p.supplier_id) || '');
+      return `
+        <tr data-id="${p.id}">
+          <td>${(p.fecha || '').slice(0,10)}</td>
+          <td>${this.safeValue(p.nombre || '')}</td>
+          <td>${prov}</td>
+          <td>${this.safeValue(p.categoria || '')}</td>
+          <td class="right">${Utils.money(p.monto || p.total || 0)}</td>
+          <td>${status === 'pendiente' ? '<span class="warn">Pendiente</span>' : '<span class="ok">Ejecutado</span>'}</td>
+          <td class="small">${this.safeValue(p.descripcion || '')}</td>
+          <td class="right">
+            ${status === 'pendiente' ? `<button class="btn tiny" data-action="exec">Ejecutar</button>` : ''}
+            <button class="btn tiny err" data-action="del">&times;</button>
+          </td>
+        </tr>
+      `;
+    }).join('') || '<tr><td colspan="8" class="center muted">Sin compras</td>';
+
     main.innerHTML = `
       <div class="card">
         <h3>Compras</h3>
-        <div class="pad">
-          <div class="muted">M\u00f3dulo de compras en desarrollo...</div>
+        <div class="pad stack">
+          <div class="row" style="flex-wrap:wrap; gap:8px">
+            <div>
+              <label>Del</label>
+              <input type="date" id="purFrom" value="${filters.from || ''}">
+            </div>
+            <div>
+              <label>Al</label>
+              <input type="date" id="purTo" value="${filters.to || ''}">
+            </div>
+            <div>
+              <label>Proveedor</label>
+              <select id="purSupplier">${supplierOptions}</select>
+            </div>
+            <div>
+              <label>Estado</label>
+              <select id="purStatus">
+                <option value="all" ${statusFilter === 'all' ? 'selected' : ''}>Todos</option>
+                <option value="ejecutado" ${statusFilter === 'ejecutado' ? 'selected' : ''}>Ejecutado</option>
+                <option value="pendiente" ${statusFilter === 'pendiente' ? 'selected' : ''}>Pendiente</option>
+              </select>
+            </div>
+            <div style="flex:1; min-width:180px">
+              <label>Buscar</label>
+              <input type="text" id="purSearch" placeholder="Nombre, descripción, proveedor" value="${filters.search || ''}">
+            </div>
+            <button class="btn" id="purApply">Filtrar</button>
+          </div>
+
+          <div class="row" style="gap:16px; flex-wrap:wrap">
+            <div class="pill">Pendiente: <strong>${Utils.money(totalPendiente)}</strong></div>
+            <div class="pill ok">Ejecutado: <strong>${Utils.money(totalEjecutado)}</strong></div>
+          </div>
+
+          <div class="card muted" style="background:#f9fbfb">
+            <div class="row" style="flex-wrap:wrap; gap:10px">
+              <div>
+                <label>Nombre</label>
+                <input type="text" id="purName" placeholder="Compra de insumos...">
+              </div>
+              <div>
+                <label>Fecha</label>
+                <input type="date" id="purDate" value="${new Date().toISOString().slice(0,10)}">
+              </div>
+              <div>
+                <label>Monto</label>
+                <input type="number" id="purAmount" min="0" step="0.01" placeholder="0.00">
+              </div>
+              <div>
+                <label>Proveedor</label>
+                <select id="purSupplierNew">${supplierOptions.replace('Todos','Seleccione')}</select>
+              </div>
+              <div>
+                <label>Categor�a</label>
+                <input type="text" id="purCategory" placeholder="Categor�a/etiqueta">
+              </div>
+              <div>
+                <label>Estado</label>
+                <select id="purStatusNew">
+                  <option value="ejecutado">Ejecutado</option>
+                  <option value="pendiente">Programado</option>
+                </select>
+              </div>
+              <div style="flex:1; min-width:200px">
+                <label>Descripción</label>
+                <input type="text" id="purDesc" placeholder="Detalle, folio, referencia">
+              </div>
+              <button class="btn" id="purAdd">Agregar</button>
+            </div>
+          </div>
+
+          <div style="overflow:auto">
+            <table class="table" id="purTable">
+              <thead>
+                <tr>
+                  <th>Fecha</th>
+                  <th>Nombre</th>
+                  <th>Proveedor</th>
+                  <th>Categor�a</th>
+                  <th class="right">Monto</th>
+                  <th>Estado</th>
+                  <th>Descripción</th>
+                  <th class="right">Acciones</th>
+                </tr>
+              </thead>
+              <tbody>${rowsHTML}</tbody>
+            </table>
+          </div>
         </div>
       </div>
     `;
+
+    const applyFilters = () => {
+      this.purchaseFilters = {
+        from: Utils.$('#purFrom').value || '',
+        to: Utils.$('#purTo').value || '',
+        supplier: Utils.$('#purSupplier').value || '',
+        status: Utils.$('#purStatus').value || 'all',
+        search: Utils.$('#purSearch').value || ''
+      };
+      this.renderPurchases();
+    };
+    const applyBtn = Utils.$('#purApply');
+    if (applyBtn) applyBtn.onclick = applyFilters;
+
+    const addBtn = Utils.$('#purAdd');
+    if (addBtn) {
+      addBtn.onclick = async () => {
+        try {
+          const name = Utils.cleanTxt(Utils.$('#purName').value || '');
+          const date = Utils.$('#purDate').value || new Date().toISOString().slice(0,10);
+          const amount = Number(Utils.$('#purAmount').value || 0);
+          const supplierId = Utils.$('#purSupplierNew').value || '';
+          const supplierName = supplierMap.get(supplierId) || '';
+          const category = Utils.cleanTxt(Utils.$('#purCategory').value || '');
+          const status = Utils.$('#purStatusNew').value || 'ejecutado';
+          const desc = Utils.cleanTxt(Utils.$('#purDesc').value || '');
+
+          if (!name) return Utils.toast('Nombre requerido', 'warn');
+          if (amount <= 0) return Utils.toast('Monto inválido', 'warn');
+
+          await this.database.put('purchases', {
+            id: this.database.uid(),
+            nombre: name,
+            descripcion: desc,
+            categoria: category,
+            supplier_id: supplierId || null,
+            proveedor: supplierName,
+            monto: amount,
+            fecha: date,
+            status
+          });
+          Utils.toast('Compra guardada', 'ok');
+          await this.renderPurchases();
+        } catch (err) {
+          console.error('Add purchase', err);
+          Utils.toast('No se pudo guardar', 'err');
+        }
+      };
+    }
+
+    const table = Utils.$('#purTable');
+    if (table) {
+      table.addEventListener('click', async (ev) => {
+        const btn = ev.target.closest('button[data-action]');
+        if (!btn) return;
+        const tr = btn.closest('tr[data-id]');
+        const id = tr ? tr.getAttribute('data-id') : null;
+        if (!id) return;
+        if (btn.dataset.action === 'del') {
+          if (!window.confirm('�Eliminar compra?')) return;
+          await this.database.delete('purchases', id);
+          Utils.toast('Compra eliminada', 'warn');
+          await this.renderPurchases();
+        } else if (btn.dataset.action === 'exec') {
+          const rec = purchases.find(p => p.id === id);
+          if (!rec) return;
+          rec.status = 'ejecutado';
+          if (!rec.fecha || rec.fecha > new Date().toISOString().slice(0,10)) {
+            rec.fecha = new Date().toISOString().slice(0,10);
+          }
+          await this.database.put('purchases', rec);
+          Utils.toast('Compra ejecutada', 'ok');
+          await this.renderPurchases();
+        }
+      });
+    }
   }
 
-  async renderSuppliers() {
+    async renderSuppliers() {
     const main = Utils.$('#main');
+    if (!main) return;
+
+    const suppliers = await this.database.getAll('suppliers');
+    const q = (this.supplierSearch || '').toLowerCase();
+    const filtered = (suppliers || []).filter(s => {
+      const txt = `${s.nombre || ''} ${s.contacto || ''} ${s.telefono || ''} ${s.email || ''}`.toLowerCase();
+      return !q || txt.includes(q);
+    });
+
+    const rowsHTML = filtered.map(s => `
+      <tr data-id="${s.id}">
+        <td>${this.safeValue(s.nombre || '')}</td>
+        <td>${this.safeValue(s.contacto || '')}</td>
+        <td>${this.safeValue(s.telefono || '')}</td>
+        <td>${this.safeValue(s.email || '')}</td>
+        <td class="small">${this.safeValue(s.notas || '')}</td>
+        <td class="right">
+          <button class="btn tiny err" data-action="del">&times;</button>
+        </td>
+      </tr>
+    `).join('') || '<tr><td colspan="6" class="center muted">Sin proveedores</td>';
+
     main.innerHTML = `
       <div class="card">
         <h3>Proveedores</h3>
-        <div class="pad">
-          <div class="muted">M\u00f3dulo de proveedores en desarrollo...</div>
+        <div class="pad stack">
+          <div class="row" style="flex-wrap:wrap; gap:8px">
+            <div style="flex:1">
+              <label>Buscar</label>
+              <input type="text" id="supSearch" placeholder="Nombre, contacto, celular, email" value="${this.supplierSearch || ''}">
+            </div>
+            <button class="btn" id="supApply">Filtrar</button>
+          </div>
+
+          <div class="card muted" style="background:#f9fbfb">
+            <div class="row" style="flex-wrap:wrap; gap:10px">
+              <div>
+                <label>Nombre</label>
+                <input type="text" id="supName" placeholder="Proveedor S.A.">
+              </div>
+              <div>
+                <label>Contacto</label>
+                <input type="text" id="supContact" placeholder="Persona contacto">
+              </div>
+              <div>
+                <label>Celular</label>
+                <input type="tel" id="supPhone" placeholder="5551234567">
+              </div>
+              <div>
+                <label>Email</label>
+                <input type="email" id="supEmail" placeholder="correo@proveedor.com">
+              </div>
+              <div style="flex:1; min-width:200px">
+                <label>Notas</label>
+                <input type="text" id="supNotes" placeholder="Condiciones, horarios">
+              </div>
+              <button class="btn" id="supAdd">Agregar</button>
+            </div>
+          </div>
+
+          <div style="overflow:auto">
+            <table class="table" id="supTable">
+              <thead>
+                <tr>
+                  <th>Nombre</th>
+                  <th>Contacto</th>
+                  <th>Celular</th>
+                  <th>Email</th>
+                  <th>Notas</th>
+                  <th class="right">Acciones</th>
+                </tr>
+              </thead>
+              <tbody>${rowsHTML}</tbody>
+            </table>
+          </div>
         </div>
       </div>
     `;
+
+    const applyBtn = Utils.$('#supApply');
+    if (applyBtn) applyBtn.onclick = () => {
+      this.supplierSearch = Utils.$('#supSearch').value || '';
+      this.renderSuppliers();
+    };
+
+    const addBtn = Utils.$('#supAdd');
+    if (addBtn) {
+      addBtn.onclick = async () => {
+        const name = Utils.cleanTxt(Utils.$('#supName').value || '');
+        const contact = Utils.cleanTxt(Utils.$('#supContact').value || '');
+        const phone = Utils.cleanTxt(Utils.$('#supPhone').value || '');
+        const email = Utils.cleanTxt(Utils.$('#supEmail').value || '');
+        const notes = Utils.cleanTxt(Utils.$('#supNotes').value || '');
+        if (!name) return Utils.toast('Nombre requerido', 'warn');
+        await this.database.put('suppliers', {
+          id: this.database.uid(),
+          nombre: name,
+          contacto: contact,
+          telefono: phone,
+          email,
+          notas: notes
+        });
+        Utils.toast('Proveedor agregado', 'ok');
+        await this.renderSuppliers();
+      };
+    }
+
+    const table = Utils.$('#supTable');
+    if (table) {
+      table.addEventListener('click', async (ev) => {
+        const btn = ev.target.closest('button[data-action]');
+        if (!btn) return;
+        const tr = btn.closest('tr[data-id]');
+        const id = tr ? tr.getAttribute('data-id') : null;
+        if (!id) return;
+        if (btn.dataset.action === 'del') {
+          if (!window.confirm('?Eliminar proveedor?')) return;
+          await this.database.delete('suppliers', id);
+          Utils.toast('Proveedor eliminado', 'warn');
+          await this.renderSuppliers();
+        }
+      });
+    }
   }
 
   async renderPayroll() {
-    const main = Utils.$('#main');
-    main.innerHTML = `
-      <div class="card">
-        <h3>N\u00f3mina</h3>
-        <div class="pad">
-          <div class="muted">M\u00f3dulo de n\u00f3mina en desarrollo...</div>
-        </div>
-      </div>
-    `;
+    return this.renderPayroll2();
   }
 
   async renderReports() {
@@ -1581,6 +2640,21 @@ class SalonPOSApp {
 
     const orders = await this.database.getAll('pos_orders');
     const expenses = await this.database.getAll('expenses');
+    const purchases = await this.database.getAll('purchases');
+    const payroll = await this.database.getAll('payroll');
+    const payrollPaid = (payroll || []).filter(p => (p.status || 'pendiente').toLowerCase() === 'pagado').map(p => ({
+      id: p.id,
+      nombre: p.concepto || 'N�mina',
+      descripcion: p.notas || '',
+      categoria: 'N�mina',
+      monto: Number(p.commission || p.monto || p.amount || 0),
+      fecha: (p.fecha_hora || p.fecha || '').slice(0, 10),
+      status: 'ejecutado'
+    }));
+    const allExpenses = []
+      .concat(expenses || [])
+      .concat(purchases || [])
+      .concat(payrollPaid || []);
     const filters = this.reportFilters || {};
     const from = filters.from ? new Date(filters.from + 'T00:00:00') : null;
     const to = filters.to ? new Date(filters.to + 'T23:59:59') : null;
@@ -1602,6 +2676,7 @@ class SalonPOSApp {
       const date = new Date(expense.fecha || expense.fecha_hora || Date.now());
       if (from && date < from) return false;
       if (to && date > to) return false;
+      if ((expense.status || 'ejecutado') === 'pendiente') return false;
       if (q) {
         const concept = ((expense.nombre || expense.descripcion || '') + ' ' + (expense.categoria || '')).toLowerCase();
         if (!concept.includes(q)) return false;
@@ -1615,7 +2690,7 @@ class SalonPOSApp {
       return bd - ad;
     });
 
-    const filteredExpenses = (expenses || []).filter(matchExpense).sort((a, b) => {
+    const filteredExpenses = (allExpenses || []).filter(matchExpense).sort((a, b) => {
       const ad = new Date(a.fecha || a.fecha_hora || 0).getTime();
       const bd = new Date(b.fecha || b.fecha_hora || 0).getTime();
       return bd - ad;
@@ -1827,11 +2902,107 @@ class SalonPOSApp {
     main.innerHTML = `
       <div class="card">
         <h3>Ajustes / Respaldo</h3>
-        <div class="pad">
-          <div class="muted">M\u00f3dulo de ajustes en desarrollo...</div>
+        <div class="pad stack">
+          <div class="row">
+            <div>
+              <label>IVA (%)</label>
+              <input type="number" id="settingsIva" min="0" max="100" step="0.01" value="${Number((this.settings && this.settings.iva_rate) || 0.16) * 100}">
+              <div class="muted small">Se aplica s\u00f3lo en reportes (precios incluyen IVA).</div>
+            </div>
+            <div>
+              <label>Lealtad (%)</label>
+              <input type="number" id="settingsLoyalty" min="0" max="50" step="0.1" value="${Number((this.settings && this.settings.loyalty_rate) || 0.02) * 100}">
+              <div class="muted small">Puntos otorgados sobre el total del ticket.</div>
+            </div>
+            <div>
+              <label>Tope comisi\u00f3n estilistas (%)</label>
+              <input type="number" id="settingsCommissionCap" min="0" max="100" step="0.5" value="${Number((this.settings && this.settings.commission_cap) || 20)}">
+              <div class="muted small">L\u00edmite m\u00e1ximo permitido al crear/editar estilistas.</div>
+            </div>
+          </div>
+
+          <div class="row" style="flex-wrap:wrap; gap:12px">
+            <div>
+              <label>Frecuencia sueldo base</label>
+              <select id="settingsBaseFreq">
+                <option value="semanal" ${((this.settings && this.settings.payroll_base_freq) || 'quincenal') === 'semanal' ? 'selected' : ''}>Semanal</option>
+                <option value="quincenal" ${((this.settings && this.settings.payroll_base_freq) || 'quincenal') === 'quincenal' ? 'selected' : ''}>Quincenal</option>
+                <option value="mensual" ${((this.settings && this.settings.payroll_base_freq) || 'quincenal') === 'mensual' ? 'selected' : ''}>Mensual</option>
+              </select>
+            </div>
+            <div>
+              <label>Frecuencia comisiones</label>
+              <select id="settingsCommFreq">
+                <option value="semanal" ${((this.settings && this.settings.payroll_comm_freq) || 'semanal') === 'semanal' ? 'selected' : ''}>Semanal</option>
+                <option value="quincenal" ${((this.settings && this.settings.payroll_comm_freq) || 'semanal') === 'quincenal' ? 'selected' : ''}>Quincenal</option>
+                <option value="mensual" ${((this.settings && this.settings.payroll_comm_freq) || 'semanal') === 'mensual' ? 'selected' : ''}>Mensual</option>
+              </select>
+            </div>
+            <div>
+              <label>Frecuencia propinas</label>
+              <select id="settingsTipFreq">
+                <option value="semanal" ${((this.settings && this.settings.payroll_tip_freq) || 'semanal') === 'semanal' ? 'selected' : ''}>Semanal</option>
+                <option value="quincenal" ${((this.settings && this.settings.payroll_tip_freq) || 'semanal') === 'quincenal' ? 'selected' : ''}>Quincenal</option>
+                <option value="mensual" ${((this.settings && this.settings.payroll_tip_freq) || 'semanal') === 'mensual' ? 'selected' : ''}>Mensual</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="row" style="align-items:flex-end; gap:12px; flex-wrap:wrap">
+            <div style="flex:1">
+              <label>M\u00e9todos de pago (separados por coma)</label>
+              <input type="text" id="settingsPayments" value="${((this.settings && this.settings.payment_methods) || ['Efectivo','Tarjeta','Transferencia']).join(', ')}">
+            </div>
+            <button class="btn" id="settingsSave">Guardar ajustes</button>
+          </div>
         </div>
       </div>
     `;
+
+    const ivaEl = Utils.$('#settingsIva');
+    const loyaltyEl = Utils.$('#settingsLoyalty');
+    const capEl = Utils.$('#settingsCommissionCap');
+    const payEl = Utils.$('#settingsPayments');
+    const baseFreqEl = Utils.$('#settingsBaseFreq');
+    const commFreqEl = Utils.$('#settingsCommFreq');
+    const tipFreqEl = Utils.$('#settingsTipFreq');
+    const saveBtn = Utils.$('#settingsSave');
+
+    if (saveBtn) {
+      saveBtn.onclick = async () => {
+        try {
+          const ivaPct = Math.max(0, Number(ivaEl.value || 0));
+          const loyaltyPct = Math.max(0, Number(loyaltyEl.value || 0));
+          const capPct = Math.max(0, Number(capEl.value || 0));
+          const payments = (payEl.value || '').split(',').map(v => v.trim()).filter(Boolean);
+
+          this.settings.iva_rate = ivaPct / 100;
+          this.settings.loyalty_rate = loyaltyPct / 100;
+          this.settings.commission_cap = capPct;
+          this.settings.payment_methods = payments.length ? payments : ['Efectivo','Tarjeta','Transferencia'];
+          this.settings.payroll_base_freq = baseFreqEl ? baseFreqEl.value : 'quincenal';
+          this.settings.payroll_comm_freq = commFreqEl ? commFreqEl.value : 'semanal';
+          this.settings.payroll_tip_freq = tipFreqEl ? tipFreqEl.value : 'semanal';
+
+          await this.database.put('settings', this.settings);
+          this.paymentMethods = this.settings.payment_methods;
+
+          UIComponents.commissionCap = Number(this.settings.commission_cap || 20);
+          this.syncPosStylistsFromMaster();
+
+          Utils.toast('Ajustes guardados', 'ok');
+          if (this.stateManager.activeTab === 'reports') {
+            await this.renderReports();
+          }
+          if (this.stateManager.activeTab === 'pos') {
+            await this.renderPOS();
+          }
+        } catch (error) {
+          console.error('Guardar ajustes', error);
+          Utils.toast('No se pudo guardar ajustes', 'err');
+        }
+      };
+    }
   }
 
   async openOrderDetail(orderId) {
@@ -1940,7 +3111,7 @@ class SalonPOSApp {
     Utils.toast('Funci\u00f3n de impresi\u00f3n en desarrollo...', 'warn');
   }
 
-  openLineEditor(index) {
+  openLineStylist(index) {
     const pos = this.stateManager.pos;
     const line = pos.lines[index];
     if (!line) {
@@ -1949,9 +3120,6 @@ class SalonPOSApp {
     }
 
     const variantName = this.safeValue((line.variant && line.variant.nombre) || 'Producto');
-    const qty = Number(line.qty || 1);
-    const discount = Number(line.discount || 0);
-    const manual = line.manualAdjust || {monto: 0, sign: '+'};
     const notes = Array.isArray(line.stylists) && line.stylists.length
       ? line.stylists.map(s => this.safeValue(s.nombre || '')).join(', ')
       : 'Sin asignaci\u00f3n';
@@ -1960,36 +3128,18 @@ class SalonPOSApp {
       const checked = line.stylists && line.stylists.some(s => s.id === stylist.id);
       return `
         <label class="row" style="align-items:center;gap:6px">
-          <input type="checkbox" value="${stylist.id}" ${checked ? 'checked' : ''}>
+          <input type="radio" name="stylistRadio" value="${stylist.id}" ${checked ? 'checked' : ''}>
           <span>${this.safeValue(stylist.nombre || '')} (${stylist.pct || 0}%)</span>
         </label>
       `;
     }).join('') || '<div class="muted small">No hay estilistas definidos</div>';
 
     Utils.showModal(
-      `Editar ${variantName}`,
+      `Asignar estilista a ${variantName}`,
       `
         <div class="stack">
           <div>
-            <label>Cantidad</label>
-            <input type="number" id="lineQty" min="1" step="1" value="${qty}">
-          </div>
-          <div>
-            <label>Descuento</label>
-            <input type="number" id="lineDiscount" min="0" step="0.01" value="${discount}">
-          </div>
-          <div>
-            <label>Ajuste manual</label>
-            <div class="row" style="gap:8px">
-              <select id="lineAdjustSign">
-                <option value="+" ${manual.sign === '+' ? 'selected' : ''}>Suma</option>
-                <option value="-" ${manual.sign === '-' ? 'selected' : ''}>Resta</option>
-              </select>
-              <input type="number" id="lineAdjustAmount" min="0" step="0.01" value="${Number(manual.monto || 0)}">
-            </div>
-          </div>
-          <div>
-            <label>Estilistas asignados</label>
+            <label>Estilista</label>
             <div id="lineStylists">${stylistsOptions}</div>
           </div>
           <div class="muted small">Actual: ${notes}</div>
@@ -2000,20 +3150,37 @@ class SalonPOSApp {
         cancelText: 'Cancelar',
         onOk: async () => {
           try {
-            await this.applyLineEditor(index);
-            Utils.toast('L\u00ednea actualizada', 'ok');
+            await this.applyLineStylist(index);
+            Utils.toast('Estilista asignado', 'ok');
             this.renderTicketLines();
             this.renderTotals();
             this.renderPaymentMethods();
             return true;
           } catch (error) {
-            console.error('Actualizar l\u00ednea', error);
+            console.error('Actualizar l�nea', error);
             Utils.toast(error.message || 'No se pudo guardar', 'err');
             return false;
           }
         }
       }
     );
+  }
+
+  async applyLineStylist(index) {
+    const pos = this.stateManager.pos;
+    const line = pos.lines[index];
+    if (!line) throw new Error('L\u00ednea no encontrada');
+
+    const stylistsContainer = Utils.$('#lineStylists');
+    const radios = stylistsContainer ? stylistsContainer.querySelectorAll('input[type="radio"]') : [];
+    const selected = Array.from(radios).find(r => r.checked);
+
+    const stylistsMaster = this.stylists || [];
+    const selectedStylist = selected ? stylistsMaster.find(s => s.id === selected.value) : null;
+    const newStylists = selectedStylist ? [{id: selectedStylist.id, nombre: selectedStylist.nombre, pct: selectedStylist.pct}] : [];
+
+    this.stateManager.updateLine(index, {stylists: newStylists});
+    await this.renderPOS();
   }
 
   exportReportData(orders, expenses) {
@@ -2068,37 +3235,6 @@ class SalonPOSApp {
       console.error('Import expenses', error);
       Utils.toast('No se pudo importar el archivo', 'err');
     }
-  }
-
-  async applyLineEditor(index) {
-    const pos = this.stateManager.pos;
-    const line = pos.lines[index];
-    if (!line) throw new Error('L\u00ednea no encontrada');
-
-    const qty = Math.max(1, Number(Utils.$('#lineQty').value || 1));
-    const discount = Math.max(0, Number(Utils.$('#lineDiscount').value || 0));
-    const sign = Utils.$('#lineAdjustSign').value === '-' ? '-' : '+';
-    const amount = Math.max(0, Number(Utils.$('#lineAdjustAmount').value || 0));
-
-    const stylistsContainer = Utils.$('#lineStylists');
-    const checkboxes = stylistsContainer ? stylistsContainer.querySelectorAll('input[type="checkbox"]') : [];
-    const selectedIds = Array.from(checkboxes)
-      .filter(input => input.checked)
-      .map(input => input.value);
-
-    const stylistsGlobal = this.stylists || [];
-    const newStylists = stylistsGlobal.filter(s => selectedIds.includes(s.id))
-      .map(s => ({id: s.id, nombre: s.nombre, pct: s.pct}));
-
-    const updates = {
-      qty,
-      discount,
-      manualAdjust: amount > 0 ? {sign, monto: amount} : null,
-      stylists: newStylists
-    };
-
-    this.posLogic.updateLine(index, updates);
-    await this.renderPOS();
   }
 
   async closeTicket() {
@@ -2175,9 +3311,512 @@ if (typeof module !== 'undefined' && module.exports) {
   window.SalonPOSApp = SalonPOSApp;
 }
 
+// Módulo de cupones (fuera de la clase, usando el prototipo)
+SalonPOSApp.prototype.renderCoupons = async function() {
+  const main = Utils.$('#main');
+  if (!main) return;
 
+  const coupons = await this.database.getAll('coupons');
+  const q = (this.couponSearch || '').toLowerCase();
+  const filtered = (coupons || []).filter(c => {
+    const txt = `${c.code || ''} ${c.descripcion || ''} ${c.tipo || ''}`.toLowerCase();
+    return !q || txt.includes(q);
+  }).sort((a, b) => (a.code || '').localeCompare(b.code || ''));
 
-  
+  const rowsHTML = filtered.map(c => {
+    const vigencia = `${c.start_date || '—'} / ${c.end_date || '—'}`;
+    const active = c.active ? '<span class="ok">Activo</span>' : '<span class="warn">Inactivo</span>';
+    const tipo = c.type === 'percent' ? `${c.value || 0}%` : Utils.money(c.value || 0);
+    return `
+      <tr data-id="${c.id}">
+        <td>${this.safeValue(c.code || '')}</td>
+        <td>${tipo}</td>
+        <td>${this.safeValue(c.min_purchase != null ? Utils.money(c.min_purchase) : '—')}</td>
+        <td>${this.safeValue(c.max_discount != null ? Utils.money(c.max_discount) : '—')}</td>
+        <td>${vigencia}</td>
+        <td>${active}</td>
+        <td class="right">
+          <button class="btn tiny err" data-action="del">&times;</button>
+        </td>
+      </tr>
+    `;
+  }).join('') || '<tr><td colspan="7" class="center muted">Sin cupones</td>';
 
+  main.innerHTML = `
+    <div class="card">
+      <h3>Cupones</h3>
+      <div class="pad stack">
+        <div class="row" style="flex-wrap:wrap; gap:8px">
+          <div style="flex:1">
+            <label>Buscar</label>
+            <input type="text" id="couponSearch" placeholder="Código, descripción, tipo" value="${this.couponSearch || ''}">
+          </div>
+          <button class="btn" id="couponApply">Filtrar</button>
+        </div>
 
+        <div class="card muted" style="background:#f9fbfb">
+          <div class="row" style="flex-wrap:wrap; gap:10px">
+            <div>
+              <label>Código</label>
+              <input type="text" id="couponCode" placeholder="ABC123">
+            </div>
+            <div>
+              <label>Tipo</label>
+              <select id="couponType">
+                <option value="amount">Monto fijo</option>
+                <option value="percent">Porcentaje</option>
+              </select>
+            </div>
+            <div>
+              <label>Valor</label>
+              <input type="number" id="couponValue" min="0" step="0.01" placeholder="0.00">
+            </div>
+            <div>
+              <label>Mínimo de compra</label>
+              <input type="number" id="couponMin" min="0" step="0.01" placeholder="0.00">
+            </div>
+            <div>
+              <label>Tope de descuento</label>
+              <input type="number" id="couponMax" min="0" step="0.01" placeholder="0.00">
+            </div>
+            <div>
+              <label>Inicio</label>
+              <input type="date" id="couponStart">
+            </div>
+            <div>
+              <label>Fin</label>
+              <input type="date" id="couponEnd">
+            </div>
+            <div class="row" style="align-items:center; gap:6px">
+              <label class="small">Activo</label>
+              <input type="checkbox" id="couponActive" checked>
+            </div>
+            <div style="flex:1; min-width:200px">
+              <label>Descripción</label>
+              <input type="text" id="couponDesc" placeholder="Opcional">
+            </div>
+            <button class="btn" id="couponAdd">Agregar</button>
+          </div>
+        </div>
 
+        <div style="overflow:auto">
+          <table class="table" id="couponTable">
+            <thead>
+              <tr>
+                <th>Código</th>
+                <th>Tipo</th>
+                <th>Mínimo</th>
+                <th>Tope</th>
+                <th>Vigencia</th>
+                <th>Estado</th>
+                <th class="right">Acciones</th>
+              </tr>
+            </thead>
+            <tbody>${rowsHTML}</tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  `;
+
+  const applyBtn = Utils.$('#couponApply');
+  if (applyBtn) applyBtn.onclick = () => {
+    this.couponSearch = Utils.$('#couponSearch').value || '';
+    this.renderCoupons();
+  };
+
+  const addBtn = Utils.$('#couponAdd');
+  if (addBtn) {
+    addBtn.onclick = async () => {
+      try {
+        const code = Utils.cleanTxt(Utils.$('#couponCode').value || '');
+        const type = Utils.$('#couponType').value || 'amount';
+        const value = Number(Utils.$('#couponValue').value || 0);
+        const minPurchase = Number(Utils.$('#couponMin').value || 0);
+        const maxDiscount = Number(Utils.$('#couponMax').value || 0);
+        const start = Utils.$('#couponStart').value || '';
+        const end = Utils.$('#couponEnd').value || '';
+        const active = !!Utils.$('#couponActive').checked;
+        const desc = Utils.cleanTxt(Utils.$('#couponDesc').value || '');
+
+        if (!code) return Utils.toast('Código requerido', 'warn');
+        if (value <= 0) return Utils.toast('Valor inválido', 'warn');
+
+        await this.database.put('coupons', {
+          id: this.database.uid(),
+          code: code.toUpperCase(),
+          type,
+          value,
+          min_purchase: minPurchase,
+          max_discount: maxDiscount,
+          start_date: start,
+          end_date: end,
+          active,
+          descripcion: desc
+        });
+        Utils.toast('Cupón guardado', 'ok');
+        await this.renderCoupons();
+      } catch (error) {
+        console.error('Guardar cupón', error);
+        Utils.toast('No se pudo guardar', 'err');
+      }
+    };
+  }
+
+  const table = Utils.$('#couponTable');
+  if (table) {
+    table.addEventListener('click', async (ev) => {
+      const btn = ev.target.closest('button[data-action]');
+      if (!btn) return;
+      const tr = btn.closest('tr[data-id]');
+      const id = tr ? tr.getAttribute('data-id') : null;
+      if (!id) return;
+      if (btn.dataset.action === 'del') {
+        if (!window.confirm('¿Eliminar cupón?')) return;
+        await this.database.delete('coupons', id);
+        Utils.toast('Cupón eliminado', 'warn');
+        await this.renderCoupons();
+      }
+    });
+  }
+};
+
+// Versión limpia del módulo de cupones (sobrescribe la anterior con textos corregidos)
+SalonPOSApp.prototype.renderCoupons = async function renderCouponsClean() {
+  const main = Utils.$('#main');
+  if (!main) return;
+
+  const coupons = await this.database.getAll('coupons');
+  const q = (this.couponSearch || '').toLowerCase();
+  const filtered = (coupons || []).filter(c => {
+    const txt = `${c.code || ''} ${c.descripcion || ''} ${c.tipo || ''}`.toLowerCase();
+    return !q || txt.includes(q);
+  }).sort((a, b) => (a.code || '').localeCompare(b.code || ''));
+
+  const rowsHTML = filtered.map(c => {
+    const vigencia = `${c.start_date || 'N/D'} / ${c.end_date || 'N/D'}`;
+    const active = c.active ? '<span class="ok">Activo</span>' : '<span class="warn">Inactivo</span>';
+    const tipo = c.type === 'percent' ? `${c.value || 0}%` : Utils.money(c.value || 0);
+    return `
+      <tr data-id="${c.id}">
+        <td>${this.safeValue(c.code || '')}</td>
+        <td>${tipo}</td>
+        <td>${this.safeValue(c.min_purchase != null ? Utils.money(c.min_purchase) : '—')}</td>
+        <td>${this.safeValue(c.max_discount != null ? Utils.money(c.max_discount) : '—')}</td>
+        <td>${vigencia}</td>
+        <td>${active}</td>
+        <td class="right">
+          <button class="btn tiny err" data-action="del">&times;</button>
+        </td>
+      </tr>
+    `;
+  }).join('') || '<tr><td colspan="7" class="center muted">Sin cupones</td>';
+
+  main.innerHTML = `
+    <div class="card">
+      <h3>Cupones</h3>
+      <div class="pad stack">
+        <div class="row" style="flex-wrap:wrap; gap:8px">
+          <div style="flex:1">
+            <label>Buscar</label>
+            <input type="text" id="couponSearch" placeholder="Código, descripción, tipo" value="${this.couponSearch || ''}">
+          </div>
+          <button class="btn" id="couponApply">Filtrar</button>
+        </div>
+
+        <div class="card muted" style="background:#f9fbfb">
+          <div class="row" style="flex-wrap:wrap; gap:10px">
+            <div>
+              <label>Código</label>
+              <input type="text" id="couponCode" placeholder="ABC123">
+            </div>
+            <div>
+              <label>Tipo</label>
+              <select id="couponType">
+                <option value="amount">Monto fijo</option>
+                <option value="percent">Porcentaje</option>
+              </select>
+            </div>
+            <div>
+              <label>Valor</label>
+              <input type="number" id="couponValue" min="0" step="0.01" placeholder="0.00">
+            </div>
+            <div>
+              <label>Mínimo de compra</label>
+              <input type="number" id="couponMin" min="0" step="0.01" placeholder="0.00">
+            </div>
+            <div>
+              <label>Tope de descuento</label>
+              <input type="number" id="couponMax" min="0" step="0.01" placeholder="0.00">
+            </div>
+            <div>
+              <label>Inicio</label>
+              <input type="date" id="couponStart">
+            </div>
+            <div>
+              <label>Fin</label>
+              <input type="date" id="couponEnd">
+            </div>
+            <div class="row" style="align-items:center; gap:6px">
+              <label class="small">Activo</label>
+              <input type="checkbox" id="couponActive" checked>
+            </div>
+            <div style="flex:1; min-width:200px">
+              <label>Descripción</label>
+              <input type="text" id="couponDesc" placeholder="Opcional">
+            </div>
+            <button class="btn" id="couponAdd">Agregar</button>
+          </div>
+        </div>
+
+        <div style="overflow:auto">
+          <table class="table" id="couponTable">
+            <thead>
+              <tr>
+                <th>Código</th>
+                <th>Tipo</th>
+                <th>Mínimo</th>
+                <th>Tope</th>
+                <th>Vigencia</th>
+                <th>Estado</th>
+                <th class="right">Acciones</th>
+              </tr>
+            </thead>
+            <tbody>${rowsHTML}</tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  `;
+
+  const applyBtn = Utils.$('#couponApply');
+  if (applyBtn) applyBtn.onclick = () => {
+    this.couponSearch = Utils.$('#couponSearch').value || '';
+    this.renderCoupons();
+  };
+
+  const addBtn = Utils.$('#couponAdd');
+  if (addBtn) {
+    addBtn.onclick = async () => {
+      try {
+        const code = Utils.cleanTxt(Utils.$('#couponCode').value || '');
+        const type = Utils.$('#couponType').value || 'amount';
+        const value = Number(Utils.$('#couponValue').value || 0);
+        const minPurchase = Number(Utils.$('#couponMin').value || 0);
+        const maxDiscount = Number(Utils.$('#couponMax').value || 0);
+        const start = Utils.$('#couponStart').value || '';
+        const end = Utils.$('#couponEnd').value || '';
+        const active = !!Utils.$('#couponActive').checked;
+        const desc = Utils.cleanTxt(Utils.$('#couponDesc').value || '');
+
+        if (!code) return Utils.toast('Código requerido', 'warn');
+        if (value <= 0) return Utils.toast('Valor inválido', 'warn');
+
+        await this.database.put('coupons', {
+          id: this.database.uid(),
+          code: code.toUpperCase(),
+          type,
+          value,
+          min_purchase: minPurchase,
+          max_discount: maxDiscount,
+          start_date: start,
+          end_date: end,
+          active,
+          descripcion: desc
+        });
+        Utils.toast('Cupón guardado', 'ok');
+        await this.renderCoupons();
+      } catch (error) {
+        console.error('Guardar cupón', error);
+        Utils.toast('No se pudo guardar', 'err');
+      }
+    };
+  }
+
+  const table = Utils.$('#couponTable');
+  if (table) {
+    table.addEventListener('click', async (ev) => {
+      const btn = ev.target.closest('button[data-action]');
+      if (!btn) return;
+      const tr = btn.closest('tr[data-id]');
+      const id = tr ? tr.getAttribute('data-id') : null;
+      if (!id) return;
+      if (btn.dataset.action === 'del') {
+        if (!window.confirm('¿Eliminar cupón?')) return;
+        await this.database.delete('coupons', id);
+        Utils.toast('Cupón eliminado', 'warn');
+        await this.renderCoupons();
+      }
+    });
+  }
+};
+
+// Bloque final en ASCII para evitar problemas de codificación
+SalonPOSApp.prototype.renderCoupons = async function renderCouponsCleanAscii() {
+  const main = Utils.$('#main');
+  if (!main) return;
+
+  const coupons = await this.database.getAll('coupons');
+  const q = (this.couponSearch || '').toLowerCase();
+  const filtered = (coupons || []).filter(c => {
+    const txt = `${c.code || ''} ${c.descripcion || ''} ${c.tipo || ''}`.toLowerCase();
+    return !q || txt.includes(q);
+  }).sort((a, b) => (a.code || '').localeCompare(b.code || ''));
+
+  const rowsHTML = filtered.map(c => {
+    const vigencia = `${c.start_date || 'N/D'} / ${c.end_date || 'N/D'}`;
+    const active = c.active ? '<span class="ok">Activo</span>' : '<span class="warn">Inactivo</span>';
+    const tipo = c.type === 'percent' ? `${c.value || 0}%` : Utils.money(c.value || 0);
+    return `
+      <tr data-id="${c.id}">
+        <td>${this.safeValue(c.code || '')}</td>
+        <td>${tipo}</td>
+        <td>${this.safeValue(c.min_purchase != null ? Utils.money(c.min_purchase) : '--')}</td>
+        <td>${this.safeValue(c.max_discount != null ? Utils.money(c.max_discount) : '--')}</td>
+        <td>${vigencia}</td>
+        <td>${active}</td>
+        <td class="right">
+          <button class="btn tiny err" data-action="del">&times;</button>
+        </td>
+      </tr>
+    `;
+  }).join('') || '<tr><td colspan="7" class="center muted">Sin cupones</td>';
+
+  main.innerHTML = `
+    <div class="card">
+      <h3>Cupones</h3>
+      <div class="pad stack">
+        <div class="row" style="flex-wrap:wrap; gap:8px">
+          <div style="flex:1">
+            <label>Buscar</label>
+            <input type="text" id="couponSearch" placeholder="Codigo, descripcion, tipo" value="${this.couponSearch || ''}">
+          </div>
+          <button class="btn" id="couponApply">Filtrar</button>
+        </div>
+
+        <div class="card muted" style="background:#f9fbfb">
+          <div class="row" style="flex-wrap:wrap; gap:10px">
+            <div>
+              <label>Codigo</label>
+              <input type="text" id="couponCode" placeholder="ABC123">
+            </div>
+            <div>
+              <label>Tipo</label>
+              <select id="couponType">
+                <option value="amount">Monto fijo</option>
+                <option value="percent">Porcentaje</option>
+              </select>
+            </div>
+            <div>
+              <label>Valor</label>
+              <input type="number" id="couponValue" min="0" step="0.01" placeholder="0.00">
+            </div>
+            <div>
+              <label>Minimo de compra</label>
+              <input type="number" id="couponMin" min="0" step="0.01" placeholder="0.00">
+            </div>
+            <div>
+              <label>Tope de descuento</label>
+              <input type="number" id="couponMax" min="0" step="0.01" placeholder="0.00">
+            </div>
+            <div>
+              <label>Inicio</label>
+              <input type="date" id="couponStart">
+            </div>
+            <div>
+              <label>Fin</label>
+              <input type="date" id="couponEnd">
+            </div>
+            <div class="row" style="align-items:center; gap:6px">
+              <label class="small">Activo</label>
+              <input type="checkbox" id="couponActive" checked>
+            </div>
+            <div style="flex:1; min-width:200px">
+              <label>Descripcion</label>
+              <input type="text" id="couponDesc" placeholder="Opcional">
+            </div>
+            <button class="btn" id="couponAdd">Agregar</button>
+          </div>
+        </div>
+
+        <div style="overflow:auto">
+          <table class="table" id="couponTable">
+            <thead>
+              <tr>
+                <th>Codigo</th>
+                <th>Tipo</th>
+                <th>Minimo</th>
+                <th>Tope</th>
+                <th>Vigencia</th>
+                <th>Estado</th>
+                <th class="right">Acciones</th>
+              </tr>
+            </thead>
+            <tbody>${rowsHTML}</tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  `;
+
+  const applyBtn = Utils.$('#couponApply');
+  if (applyBtn) applyBtn.onclick = () => {
+    this.couponSearch = Utils.$('#couponSearch').value || '';
+    this.renderCoupons();
+  };
+
+  const addBtn = Utils.$('#couponAdd');
+  if (addBtn) {
+    addBtn.onclick = async () => {
+      try {
+        const code = Utils.cleanTxt(Utils.$('#couponCode').value || '');
+        const type = Utils.$('#couponType').value || 'amount';
+        const value = Number(Utils.$('#couponValue').value || 0);
+        const minPurchase = Number(Utils.$('#couponMin').value || 0);
+        const maxDiscount = Number(Utils.$('#couponMax').value || 0);
+        const start = Utils.$('#couponStart').value || '';
+        const end = Utils.$('#couponEnd').value || '';
+        const active = !!Utils.$('#couponActive').checked;
+        const desc = Utils.cleanTxt(Utils.$('#couponDesc').value || '');
+
+        if (!code) return Utils.toast('Codigo requerido', 'warn');
+        if (value <= 0) return Utils.toast('Valor invalido', 'warn');
+
+        await this.database.put('coupons', {
+          id: this.database.uid(),
+          code: code.toUpperCase(),
+          type,
+          value,
+          min_purchase: minPurchase,
+          max_discount: maxDiscount,
+          start_date: start,
+          end_date: end,
+          active,
+          descripcion: desc
+        });
+        Utils.toast('Cupon guardado', 'ok');
+        await this.renderCoupons();
+      } catch (error) {
+        console.error('Guardar cupon', error);
+        Utils.toast('No se pudo guardar', 'err');
+      }
+    };
+  }
+
+  const table = Utils.$('#couponTable');
+  if (table) {
+    table.addEventListener('click', async (ev) => {
+      const btn = ev.target.closest('button[data-action]');
+      if (!btn) return;
+      const tr = btn.closest('tr[data-id]');
+      const id = tr ? tr.getAttribute('data-id') : null;
+      if (!id) return;
+      if (btn.dataset.action === 'del') {
+        if (!window.confirm('¿Eliminar cupon?')) return;
+        await this.database.delete('coupons', id);
+        Utils.toast('Cupon eliminado', 'warn');
+        await this.renderCoupons();
+      }
+    });
+  }
+};

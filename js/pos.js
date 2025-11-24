@@ -9,10 +9,13 @@ class POSLogic {
   // Calculate totals for current ticket
   async calcTotals() {
     this.state.normalizeState();
+    const settings = await this.db.getById('settings', 'main');
     
     let subtotal = 0;
     let hasLineDiscount = false;
+    let commissionTotal = 0;
     const pos = this.state.pos;
+    const commissionCap = Number((settings && settings.commission_cap) || 20);
     
     // Calculate line totals
     const lines = pos.lines.map(l => {
@@ -24,6 +27,12 @@ class POSLogic {
       const total = Math.max(0, base - disc + adj);
       
       if (disc > 0) hasLineDiscount = true;
+      // Commission per line: sum of stylist pct, capped at configured max
+      const lineComm = (l.stylists || []).reduce((sum, st) => {
+        const pct = Math.min(Number(st.pct || 0), commissionCap);
+        return sum + (total * (pct / 100));
+      }, 0);
+      commissionTotal += lineComm;
       return Object.assign({}, l, {base: base, lineTotal: Number(Utils.fmtMoney(total))});
     });
     
@@ -71,7 +80,6 @@ class POSLogic {
     }
 
     // Handle loyalty points
-    const settings = await this.db.getById('settings', 'main');
     if (settings && settings.prices_include_tax === undefined) {
       settings.prices_include_tax = true;
     }
@@ -102,7 +110,17 @@ class POSLogic {
 
     // Calculate IVA
     const ivaRate = Number((settings && settings.iva_rate) != null ? settings.iva_rate : 0.16);
-    const taxBase = Math.max(0, Number(subtotal || 0) - Number(couponCut || 0) - Number(pointsUse || 0));
+    // Global discount
+    const globalDiscount = Number(pos.globalDiscount || 0);
+    const globalType = pos.globalDiscountType || 'amount';
+    let taxBase = Math.max(0, Number(subtotal || 0) - Number(couponCut || 0) - Number(pointsUse || 0));
+    if (globalDiscount > 0) {
+      if (globalType === 'percent') {
+        taxBase = Math.max(0, taxBase - (taxBase * (globalDiscount / 100)));
+      } else {
+        taxBase = Math.max(0, taxBase - globalDiscount);
+      }
+    }
     const netBase = taxBase / (1 + ivaRate);
     const iva = Number((taxBase - netBase).toFixed(2));
 
@@ -119,6 +137,9 @@ class POSLogic {
       iva,
       ivaRate,
       total,
+      commissionTotal,
+      globalDiscount,
+      globalDiscountType: pos.globalDiscountType,
       _tipBlocked: pos._tipBlocked
     };
   }
@@ -306,6 +327,7 @@ class POSLogic {
       pointsEarned: totals.pointsEarned,
       iva: totals.iva,
       tipTotal: totals.tipTotal,
+      commissionTotal: totals.commissionTotal,
       total: totals.total,
       payments: pos.payments,
       stylistsGlobal: pos.stylistsGlobal,
@@ -316,8 +338,17 @@ class POSLogic {
     // Save order
     await this.db.put('pos_orders', order);
 
+    // Fetch settings for commission cap
+    const settings = await this.db.getById('settings', 'main');
+    const commissionCap = Number((settings && settings.commission_cap) || 20);
+
     // Save lines
     for (const line of pos.lines) {
+      const lineComm = (line.stylists || []).reduce((sum, st) => {
+        const pct = Math.min(Number(st.pct || 0), commissionCap);
+        return sum + (Number(line.lineTotal || 0) * (pct / 100));
+      }, 0);
+
       await this.db.put('pos_lines', {
         id: Utils.uid(),
         order_id: order.id,
@@ -329,8 +360,31 @@ class POSLogic {
         stylists: line.stylists,
         price: (line.variant && line.variant.precio) || 0,
         base: line.base,
-        lineTotal: line.lineTotal
+        lineTotal: line.lineTotal,
+        commission: lineComm
       });
+
+      // Save commissions per stylist (using payroll store)
+      if (Array.isArray(line.stylists)) {
+        for (const st of line.stylists) {
+          const pct = Math.min(Number(st.pct || 0), commissionCap);
+          const comm = Number(line.lineTotal || 0) * (pct / 100);
+          if (comm > 0) {
+            await this.db.put('payroll', {
+              id: Utils.uid(),
+              order_id: order.id,
+              line_id: line.id,
+              stylist_id: st.id,
+              pct: pct,
+              commission: comm,
+              fecha_hora: Utils.nowISO(),
+              concepto: `Comisi\u00f3n ${line.variant && line.variant.nombre ? line.variant.nombre : ''}`.trim(),
+              status: 'pendiente',
+              tipo: 'commission'
+            });
+          }
+        }
+      }
     }
 
     // Save tips if any
