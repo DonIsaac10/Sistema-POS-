@@ -1,4 +1,4 @@
-// Main application entry point
+﻿// Main application entry point
 
 class SalonPOSApp {
   constructor() {
@@ -25,7 +25,7 @@ class SalonPOSApp {
     this.purchaseFilters = {from: null, to: null, supplier: '', status: 'all', search: ''};
   }
 
-  // Nueva n�mina: calcula base + comisiones + propinas por periodo y permite registrar pagos pendientes/pagados
+  // Nueva nómina: calcula base + comisiones + propinas por periodo y permite registrar pagos pendientes/pagados
   async renderPayroll2() {
     const main = Utils.$('#main');
     if (!main) return;
@@ -102,7 +102,7 @@ class SalonPOSApp {
 
     const payables = this.stylists.map(st => {
       const baseFull = Number(st.base_salary || 0);
-      // prorrateo de base seg�n frecuencia y rango
+      // prorrateo de base segï¿½n frecuencia y rango
       let base = baseFull;
       if (rangeDays > 0) {
         if (baseFreq === 'semanal') base = baseFull * Math.min(1, rangeDays / 7);
@@ -117,7 +117,7 @@ class SalonPOSApp {
         const od = orderDates.get(line.order_id);
         if (!od || !inRange(od)) return;
         if (!line.lineTotal) return;
-        // s�lo contar comisiones si coincide frecuencia (si se quisiera filtrar por semana vs quincena, se usa el rango ya)
+        // sï¿½lo contar comisiones si coincide frecuencia (si se quisiera filtrar por semana vs quincena, se usa el rango ya)
         line.stylists.forEach(ls => {
           if (ls.id === st.id) {
             const pct = Math.min(Number(ls.pct || 0), commissionCap);
@@ -168,7 +168,7 @@ class SalonPOSApp {
       const styName = this.safeValue(row.stylist_nombre || (sty && sty.nombre) || 'N/D');
       const date = (row.fecha_hora || row.fecha || row.created_at || '').slice(0, 10);
       const method = this.safeValue(row.metodo || row.method || 'N/D');
-      const concept = this.safeValue(row.concepto || 'Pago n�mina');
+      const concept = this.safeValue(row.concepto || 'Pago nómina');
       const note = this.safeValue(row.notas || '');
       return `
         <tr data-id="${row.id}">
@@ -189,7 +189,7 @@ class SalonPOSApp {
 
     main.innerHTML = `
       <div class="card">
-        <h3>N�mina</h3>
+        <h3>nómina</h3>
         <div class="pad stack">
           <div class="row" style="flex-wrap:wrap; gap:8px">
             <div>
@@ -214,7 +214,7 @@ class SalonPOSApp {
             </div>
             <div style="flex:1; min-width:180px">
               <label>Buscar</label>
-              <input type="text" id="payrollSearch" placeholder="Concepto, notas, m�todo" value="${filters.search || ''}">
+              <input type="text" id="payrollSearch" placeholder="Concepto, notas, mï¿½todo" value="${filters.search || ''}">
             </div>
             <button class="btn" id="payrollApply">Filtrar</button>
           </div>
@@ -262,10 +262,10 @@ class SalonPOSApp {
               </div>
               <div style="flex:1; min-width:200px">
                 <label>Concepto</label>
-                <input type="text" id="payrollConcept" placeholder="Pago n�mina / bono">
+                <input type="text" id="payrollConcept" placeholder="Pago nómina / bono">
               </div>
               <div>
-                <label>M�todo</label>
+                <label>Mï¿½todo</label>
                 <select id="payrollMethod">${paymentOpts}</select>
               </div>
               <div>
@@ -292,7 +292,7 @@ class SalonPOSApp {
                   <th>Concepto</th>
                   <th class="right">Monto</th>
                   <th>Estado</th>
-                  <th>M�todo</th>
+                  <th>Mï¿½todo</th>
                   <th>Notas</th>
                   <th class="right">Acciones</th>
                 </tr>
@@ -327,7 +327,7 @@ class SalonPOSApp {
           const styName = this.safeValue(sty ? sty.nombre : '');
           const fecha = Utils.$('#payrollDate').value || new Date().toISOString().slice(0,10);
           const amount = Number(Utils.$('#payrollAmount').value || 0);
-          const concept = Utils.cleanTxt(Utils.$('#payrollConcept').value || 'N�mina');
+          const concept = Utils.cleanTxt(Utils.$('#payrollConcept').value || 'nómina');
           const method = Utils.$('#payrollMethod').value || 'Efectivo';
           const status = Utils.$('#payrollStatusNew').value || 'pagado';
           const notes = Utils.cleanTxt(Utils.$('#payrollNotes').value || '');
@@ -337,7 +337,7 @@ class SalonPOSApp {
             return;
           }
           if (amount <= 0) {
-            Utils.toast('Monto inválido', 'warn');
+            Utils.toast('Monto invÃ¡lido', 'warn');
             return;
           }
 
@@ -359,7 +359,7 @@ class SalonPOSApp {
           Utils.toast('Registro agregado', 'ok');
           await this.renderPayroll2();
         } catch (error) {
-          console.error('Agregar n�mina', error);
+          console.error('Agregar nï¿½mina', error);
           Utils.toast('No se pudo agregar el registro', 'err');
         }
       };
@@ -382,7 +382,7 @@ class SalonPOSApp {
           Utils.toast('Marcado como pagado', 'ok');
           await this.renderPayroll2();
         } else if (btn.dataset.action === 'del') {
-          if (!window.confirm('�Eliminar registro?')) return;
+          if (!window.confirm('ï¿½Eliminar registro?')) return;
           await this.database.delete('payroll', id);
           Utils.toast('Registro eliminado', 'warn');
           await this.renderPayroll2();
@@ -406,7 +406,7 @@ class SalonPOSApp {
           fecha,
           fecha_hora: fecha + 'T00:00:00',
           commission: pay.pending,
-          concepto: 'N�mina periodo',
+          concepto: 'nómina periodo',
           metodo: 'Efectivo',
           status: 'pendiente',
           tipo: 'auto',
@@ -836,9 +836,6 @@ class SalonPOSApp {
         case 'payroll':
           await this.renderPayroll2 ? await this.renderPayroll2() : await this.renderPayroll();
           break;
-        case 'coupons':
-          await this.renderCoupons();
-          break;
         case 'reports':
           await this.renderReports();
           break;
@@ -883,17 +880,17 @@ class SalonPOSApp {
             </div>
           </div>
 
-          <div class="card" id="cardTips">
-            <h3>Propina</h3>
-            <div class="pad">
-              <div id="posTips"></div>
-            </div>
-          </div>
-
           <div class="card" id="cardCoupon">
             <h3>Cup\u00f3n / Descuento</h3>
             <div class="pad">
               <div id="posCoupon"></div>
+            </div>
+          </div>
+
+          <div class="card" id="cardTips">
+            <h3>Propina</h3>
+            <div class="pad">
+              <div id="posTips"></div>
             </div>
           </div>
 
@@ -924,10 +921,10 @@ class SalonPOSApp {
     // Render catalog
     UIComponents.renderCatalog(this.products, this.variants);
     
-    // Render customer / stylists / tips / coupon
+    // Render customer / stylists / coupon / tips
     this.renderCustomerBox();
-    this.renderTipsBox();
     this.renderCouponBox();
+    this.renderTipsBox();
     
     // Render ticket lines
     this.renderTicketLines();
@@ -1017,41 +1014,49 @@ class SalonPOSApp {
     const pointsEarned = this.currentTotals ? this.currentTotals.pointsEarned : 0;
     const pointsAvailable = cust && cust.puntos ? Number(cust.puntos) : 0;
 
-    const resultsHTML = (this.customerSearchResults || []).slice(0, 5).map(c => `
-      <div class="chip" data-cust="${c.id}">
-        <span>${this.safeValue(c.nombre || '')}</span>
-        <b>${this.safeValue(c.celular || '')}</b>
-      </div>
-    `).join('') || '<div class="muted small">Busca por celular</div>';
+    const matches = this.customerSearchResults || [];
+    const hasMany = matches.length > 1;
+    const resultsHTML = hasMany
+      ? matches.slice(0, 5).map(c => `
+        <button class="btn light full" data-cust="${c.id}" style="justify-content:space-between">
+          <span>${this.safeValue(c.nombre || 'Cliente')}</span>
+          <span class="muted small">${this.safeValue(c.celular || '')}</span>
+        </button>
+      `).join('')
+      : '<div class="muted small">Busca por celular</div>';
 
     container.innerHTML = `
       <div class="card-lite">
-        <div class="row" style="align-items:flex-end; gap:8px">
-          <div style="flex:1">
+        <div class="row" style="align-items:flex-end; gap:8px; flex-wrap:wrap">
+          <div style="flex:1 1 200px">
             <label>Cliente (celular)</label>
             <input type="tel" id="custSearchPhone" placeholder="Ej. 5512345678">
           </div>
-          <div style="flex:0 0 auto">
+          <div class="row" style="gap:8px">
+            <button class="btn light" id="custBtnClear">General</button>
             <button class="btn light" id="custBtnSearch">Buscar</button>
           </div>
-          <div style="flex:0 0 auto">
-            <button class="btn light" id="custBtnClear">General</button>
-          </div>
         </div>
-        <div class="muted small" style="margin-top:6px">Resultados</div>
-        <div id="custResults" class="chips">${resultsHTML}</div>
-        <div style="margin-top:8px">
-          <div class="label-aux">Cliente seleccionado</div>
-          <div><strong>${cust ? this.safeValue(cust.nombre || '') : 'Cliente general'}</strong></div>
-          <div class="muted small">Puntos: ${pointsAvailable}</div>
-          <div class="muted small">Puntos a ganar: ${pointsEarned}</div>
-        </div>
-        <div style="margin-top:8px; display:flex; gap:8px; align-items:flex-end; flex-wrap:wrap">
-          <div>
-            <label>Usar puntos</label>
-            <input type="number" id="custPointsUse" min="0" step="1" value="${Number(pos.customerPointsUsed || 0)}">
+        <div class="stack" style="margin-top:8px">
+          <div class="muted small">Resultados</div>
+          <div id="custResults" class="stack" style="gap:6px">${resultsHTML}</div>
+
+          <div class="card-lite" style="background:#f9fbfb; margin-top:6px">
+            <div class="label-aux">Cliente seleccionado</div>
+            <div style="color: var(--ok, #0a996f); font-weight:700;">
+              ${cust ? `Estás atendiendo a: ${this.safeValue(cust.nombre || '')}` : 'Cliente general'}
+            </div>
+            <div class="muted small">Puntos: ${pointsAvailable}</div>
+            <div class="muted small">Puntos a ganar: ${pointsEarned}</div>
           </div>
-          <button class="btn light" id="custApplyPoints">Aplicar puntos</button>
+
+          <div style="display:flex; gap:8px; align-items:flex-end; flex-wrap:wrap">
+            <div style="flex:1 1 160px">
+              <label>Usar puntos</label>
+              <input type="number" id="custPointsUse" min="0" step="1" value="${Number(pos.customerPointsUsed || 0)}">
+            </div>
+            <button class="btn light" id="custApplyPoints">Aplicar puntos</button>
+          </div>
         </div>
       </div>
     `;
@@ -1105,6 +1110,15 @@ class SalonPOSApp {
     }
     const list = await this.posLogic.searchCustomersByPhone(cleaned);
     this.customerSearchResults = list || [];
+
+    if (this.customerSearchResults.length === 1) {
+      await this.selectCustomerById(this.customerSearchResults[0].id);
+      this.customerSearchResults = [];
+      const input = Utils.$('#custSearchPhone');
+      if (input) input.value = '';
+      return;
+    }
+
     this.renderCustomerBox();
   }
 
@@ -1230,10 +1244,10 @@ class SalonPOSApp {
     const globalDiscType = pos.globalDiscountType || 'amount';
     container.innerHTML = `
       <div class="card-lite">
-        <div class="label-aux">Cupón / Descuento</div>
+        <div class="label-aux">CupÃ³n / Descuento</div>
         <div class="row" style="align-items:flex-end; gap:8px">
           <div style="flex:1">
-            <label>Código</label>
+            <label>CÃ³digo</label>
             <input type="text" id="couponCode" value="${this.safeValue(current)}" placeholder="Ej. PROMO10">
           </div>
           <button class="btn light" id="couponApply">Aplicar</button>
@@ -2358,7 +2372,7 @@ class SalonPOSApp {
             </div>
             <div style="flex:1; min-width:180px">
               <label>Buscar</label>
-              <input type="text" id="purSearch" placeholder="Nombre, descripción, proveedor" value="${filters.search || ''}">
+              <input type="text" id="purSearch" placeholder="Nombre, descripciÃ³n, proveedor" value="${filters.search || ''}">
             </div>
             <button class="btn" id="purApply">Filtrar</button>
           </div>
@@ -2387,8 +2401,8 @@ class SalonPOSApp {
                 <select id="purSupplierNew">${supplierOptions.replace('Todos','Seleccione')}</select>
               </div>
               <div>
-                <label>Categor�a</label>
-                <input type="text" id="purCategory" placeholder="Categor�a/etiqueta">
+                <label>Categorï¿½a</label>
+                <input type="text" id="purCategory" placeholder="Categorï¿½a/etiqueta">
               </div>
               <div>
                 <label>Estado</label>
@@ -2398,7 +2412,7 @@ class SalonPOSApp {
                 </select>
               </div>
               <div style="flex:1; min-width:200px">
-                <label>Descripción</label>
+                <label>DescripciÃ³n</label>
                 <input type="text" id="purDesc" placeholder="Detalle, folio, referencia">
               </div>
               <button class="btn" id="purAdd">Agregar</button>
@@ -2412,10 +2426,10 @@ class SalonPOSApp {
                   <th>Fecha</th>
                   <th>Nombre</th>
                   <th>Proveedor</th>
-                  <th>Categor�a</th>
+                  <th>Categorï¿½a</th>
                   <th class="right">Monto</th>
                   <th>Estado</th>
-                  <th>Descripción</th>
+                  <th>DescripciÃ³n</th>
                   <th class="right">Acciones</th>
                 </tr>
               </thead>
@@ -2453,7 +2467,7 @@ class SalonPOSApp {
           const desc = Utils.cleanTxt(Utils.$('#purDesc').value || '');
 
           if (!name) return Utils.toast('Nombre requerido', 'warn');
-          if (amount <= 0) return Utils.toast('Monto inválido', 'warn');
+          if (amount <= 0) return Utils.toast('Monto invÃ¡lido', 'warn');
 
           await this.database.put('purchases', {
             id: this.database.uid(),
@@ -2484,7 +2498,7 @@ class SalonPOSApp {
         const id = tr ? tr.getAttribute('data-id') : null;
         if (!id) return;
         if (btn.dataset.action === 'del') {
-          if (!window.confirm('�Eliminar compra?')) return;
+          if (!window.confirm('ï¿½Eliminar compra?')) return;
           await this.database.delete('purchases', id);
           Utils.toast('Compra eliminada', 'warn');
           await this.renderPurchases();
@@ -2621,7 +2635,7 @@ class SalonPOSApp {
         const id = tr ? tr.getAttribute('data-id') : null;
         if (!id) return;
         if (btn.dataset.action === 'del') {
-          if (!window.confirm('?Eliminar proveedor?')) return;
+          if (!window.confirm('¿Eliminar proveedor?')) return;
           await this.database.delete('suppliers', id);
           Utils.toast('Proveedor eliminado', 'warn');
           await this.renderSuppliers();
@@ -2644,9 +2658,9 @@ class SalonPOSApp {
     const payroll = await this.database.getAll('payroll');
     const payrollPaid = (payroll || []).filter(p => (p.status || 'pendiente').toLowerCase() === 'pagado').map(p => ({
       id: p.id,
-      nombre: p.concepto || 'N�mina',
+      nombre: p.concepto || 'nómina',
       descripcion: p.notas || '',
-      categoria: 'N�mina',
+      categoria: 'nómina',
       monto: Number(p.commission || p.monto || p.amount || 0),
       fecha: (p.fecha_hora || p.fecha || '').slice(0, 10),
       status: 'ejecutado'
@@ -3157,7 +3171,7 @@ class SalonPOSApp {
             this.renderPaymentMethods();
             return true;
           } catch (error) {
-            console.error('Actualizar l�nea', error);
+            console.error('Actualizar lï¿½nea', error);
             Utils.toast(error.message || 'No se pudo guardar', 'err');
             return false;
           }
@@ -3311,7 +3325,7 @@ if (typeof module !== 'undefined' && module.exports) {
   window.SalonPOSApp = SalonPOSApp;
 }
 
-// Módulo de cupones (fuera de la clase, usando el prototipo)
+// MÃ³dulo de cupones (fuera de la clase, usando el prototipo)
 SalonPOSApp.prototype.renderCoupons = async function() {
   const main = Utils.$('#main');
   if (!main) return;
@@ -3324,15 +3338,15 @@ SalonPOSApp.prototype.renderCoupons = async function() {
   }).sort((a, b) => (a.code || '').localeCompare(b.code || ''));
 
   const rowsHTML = filtered.map(c => {
-    const vigencia = `${c.start_date || '—'} / ${c.end_date || '—'}`;
+    const vigencia = `${c.start_date || 'â€”'} / ${c.end_date || 'â€”'}`;
     const active = c.active ? '<span class="ok">Activo</span>' : '<span class="warn">Inactivo</span>';
     const tipo = c.type === 'percent' ? `${c.value || 0}%` : Utils.money(c.value || 0);
     return `
       <tr data-id="${c.id}">
         <td>${this.safeValue(c.code || '')}</td>
         <td>${tipo}</td>
-        <td>${this.safeValue(c.min_purchase != null ? Utils.money(c.min_purchase) : '—')}</td>
-        <td>${this.safeValue(c.max_discount != null ? Utils.money(c.max_discount) : '—')}</td>
+        <td>${this.safeValue(c.min_purchase != null ? Utils.money(c.min_purchase) : 'â€”')}</td>
+        <td>${this.safeValue(c.max_discount != null ? Utils.money(c.max_discount) : 'â€”')}</td>
         <td>${vigencia}</td>
         <td>${active}</td>
         <td class="right">
@@ -3349,7 +3363,7 @@ SalonPOSApp.prototype.renderCoupons = async function() {
         <div class="row" style="flex-wrap:wrap; gap:8px">
           <div style="flex:1">
             <label>Buscar</label>
-            <input type="text" id="couponSearch" placeholder="Código, descripción, tipo" value="${this.couponSearch || ''}">
+            <input type="text" id="couponSearch" placeholder="CÃ³digo, descripciÃ³n, tipo" value="${this.couponSearch || ''}">
           </div>
           <button class="btn" id="couponApply">Filtrar</button>
         </div>
@@ -3357,7 +3371,7 @@ SalonPOSApp.prototype.renderCoupons = async function() {
         <div class="card muted" style="background:#f9fbfb">
           <div class="row" style="flex-wrap:wrap; gap:10px">
             <div>
-              <label>Código</label>
+              <label>CÃ³digo</label>
               <input type="text" id="couponCode" placeholder="ABC123">
             </div>
             <div>
@@ -3372,7 +3386,7 @@ SalonPOSApp.prototype.renderCoupons = async function() {
               <input type="number" id="couponValue" min="0" step="0.01" placeholder="0.00">
             </div>
             <div>
-              <label>Mínimo de compra</label>
+              <label>MÃ­nimo de compra</label>
               <input type="number" id="couponMin" min="0" step="0.01" placeholder="0.00">
             </div>
             <div>
@@ -3392,7 +3406,7 @@ SalonPOSApp.prototype.renderCoupons = async function() {
               <input type="checkbox" id="couponActive" checked>
             </div>
             <div style="flex:1; min-width:200px">
-              <label>Descripción</label>
+              <label>DescripciÃ³n</label>
               <input type="text" id="couponDesc" placeholder="Opcional">
             </div>
             <button class="btn" id="couponAdd">Agregar</button>
@@ -3403,9 +3417,9 @@ SalonPOSApp.prototype.renderCoupons = async function() {
           <table class="table" id="couponTable">
             <thead>
               <tr>
-                <th>Código</th>
+                <th>CÃ³digo</th>
                 <th>Tipo</th>
-                <th>Mínimo</th>
+                <th>MÃ­nimo</th>
                 <th>Tope</th>
                 <th>Vigencia</th>
                 <th>Estado</th>
@@ -3439,8 +3453,8 @@ SalonPOSApp.prototype.renderCoupons = async function() {
         const active = !!Utils.$('#couponActive').checked;
         const desc = Utils.cleanTxt(Utils.$('#couponDesc').value || '');
 
-        if (!code) return Utils.toast('Código requerido', 'warn');
-        if (value <= 0) return Utils.toast('Valor inválido', 'warn');
+        if (!code) return Utils.toast('CÃ³digo requerido', 'warn');
+        if (value <= 0) return Utils.toast('Valor invÃ¡lido', 'warn');
 
         await this.database.put('coupons', {
           id: this.database.uid(),
@@ -3454,10 +3468,10 @@ SalonPOSApp.prototype.renderCoupons = async function() {
           active,
           descripcion: desc
         });
-        Utils.toast('Cupón guardado', 'ok');
+        Utils.toast('CupÃ³n guardado', 'ok');
         await this.renderCoupons();
       } catch (error) {
-        console.error('Guardar cupón', error);
+        console.error('Guardar cupÃ³n', error);
         Utils.toast('No se pudo guardar', 'err');
       }
     };
@@ -3472,16 +3486,16 @@ SalonPOSApp.prototype.renderCoupons = async function() {
       const id = tr ? tr.getAttribute('data-id') : null;
       if (!id) return;
       if (btn.dataset.action === 'del') {
-        if (!window.confirm('¿Eliminar cupón?')) return;
+        if (!window.confirm('Â¿Eliminar cupÃ³n?')) return;
         await this.database.delete('coupons', id);
-        Utils.toast('Cupón eliminado', 'warn');
+        Utils.toast('CupÃ³n eliminado', 'warn');
         await this.renderCoupons();
       }
     });
   }
 };
 
-// Versión limpia del módulo de cupones (sobrescribe la anterior con textos corregidos)
+// VersiÃ³n limpia del mÃ³dulo de cupones (sobrescribe la anterior con textos corregidos)
 SalonPOSApp.prototype.renderCoupons = async function renderCouponsClean() {
   const main = Utils.$('#main');
   if (!main) return;
@@ -3501,8 +3515,8 @@ SalonPOSApp.prototype.renderCoupons = async function renderCouponsClean() {
       <tr data-id="${c.id}">
         <td>${this.safeValue(c.code || '')}</td>
         <td>${tipo}</td>
-        <td>${this.safeValue(c.min_purchase != null ? Utils.money(c.min_purchase) : '—')}</td>
-        <td>${this.safeValue(c.max_discount != null ? Utils.money(c.max_discount) : '—')}</td>
+        <td>${this.safeValue(c.min_purchase != null ? Utils.money(c.min_purchase) : 'â€”')}</td>
+        <td>${this.safeValue(c.max_discount != null ? Utils.money(c.max_discount) : 'â€”')}</td>
         <td>${vigencia}</td>
         <td>${active}</td>
         <td class="right">
@@ -3519,7 +3533,7 @@ SalonPOSApp.prototype.renderCoupons = async function renderCouponsClean() {
         <div class="row" style="flex-wrap:wrap; gap:8px">
           <div style="flex:1">
             <label>Buscar</label>
-            <input type="text" id="couponSearch" placeholder="Código, descripción, tipo" value="${this.couponSearch || ''}">
+            <input type="text" id="couponSearch" placeholder="CÃ³digo, descripciÃ³n, tipo" value="${this.couponSearch || ''}">
           </div>
           <button class="btn" id="couponApply">Filtrar</button>
         </div>
@@ -3527,7 +3541,7 @@ SalonPOSApp.prototype.renderCoupons = async function renderCouponsClean() {
         <div class="card muted" style="background:#f9fbfb">
           <div class="row" style="flex-wrap:wrap; gap:10px">
             <div>
-              <label>Código</label>
+              <label>CÃ³digo</label>
               <input type="text" id="couponCode" placeholder="ABC123">
             </div>
             <div>
@@ -3542,7 +3556,7 @@ SalonPOSApp.prototype.renderCoupons = async function renderCouponsClean() {
               <input type="number" id="couponValue" min="0" step="0.01" placeholder="0.00">
             </div>
             <div>
-              <label>Mínimo de compra</label>
+              <label>MÃ­nimo de compra</label>
               <input type="number" id="couponMin" min="0" step="0.01" placeholder="0.00">
             </div>
             <div>
@@ -3562,7 +3576,7 @@ SalonPOSApp.prototype.renderCoupons = async function renderCouponsClean() {
               <input type="checkbox" id="couponActive" checked>
             </div>
             <div style="flex:1; min-width:200px">
-              <label>Descripción</label>
+              <label>DescripciÃ³n</label>
               <input type="text" id="couponDesc" placeholder="Opcional">
             </div>
             <button class="btn" id="couponAdd">Agregar</button>
@@ -3573,9 +3587,9 @@ SalonPOSApp.prototype.renderCoupons = async function renderCouponsClean() {
           <table class="table" id="couponTable">
             <thead>
               <tr>
-                <th>Código</th>
+                <th>CÃ³digo</th>
                 <th>Tipo</th>
-                <th>Mínimo</th>
+                <th>MÃ­nimo</th>
                 <th>Tope</th>
                 <th>Vigencia</th>
                 <th>Estado</th>
@@ -3609,8 +3623,8 @@ SalonPOSApp.prototype.renderCoupons = async function renderCouponsClean() {
         const active = !!Utils.$('#couponActive').checked;
         const desc = Utils.cleanTxt(Utils.$('#couponDesc').value || '');
 
-        if (!code) return Utils.toast('Código requerido', 'warn');
-        if (value <= 0) return Utils.toast('Valor inválido', 'warn');
+        if (!code) return Utils.toast('CÃ³digo requerido', 'warn');
+        if (value <= 0) return Utils.toast('Valor invÃ¡lido', 'warn');
 
         await this.database.put('coupons', {
           id: this.database.uid(),
@@ -3624,10 +3638,10 @@ SalonPOSApp.prototype.renderCoupons = async function renderCouponsClean() {
           active,
           descripcion: desc
         });
-        Utils.toast('Cupón guardado', 'ok');
+        Utils.toast('CupÃ³n guardado', 'ok');
         await this.renderCoupons();
       } catch (error) {
-        console.error('Guardar cupón', error);
+        console.error('Guardar cupÃ³n', error);
         Utils.toast('No se pudo guardar', 'err');
       }
     };
@@ -3642,16 +3656,16 @@ SalonPOSApp.prototype.renderCoupons = async function renderCouponsClean() {
       const id = tr ? tr.getAttribute('data-id') : null;
       if (!id) return;
       if (btn.dataset.action === 'del') {
-        if (!window.confirm('¿Eliminar cupón?')) return;
+        if (!window.confirm('Â¿Eliminar cupÃ³n?')) return;
         await this.database.delete('coupons', id);
-        Utils.toast('Cupón eliminado', 'warn');
+        Utils.toast('CupÃ³n eliminado', 'warn');
         await this.renderCoupons();
       }
     });
   }
 };
 
-// Bloque final en ASCII para evitar problemas de codificación
+// Bloque final en ASCII para evitar problemas de codificaciÃ³n
 SalonPOSApp.prototype.renderCoupons = async function renderCouponsCleanAscii() {
   const main = Utils.$('#main');
   if (!main) return;
@@ -3812,7 +3826,7 @@ SalonPOSApp.prototype.renderCoupons = async function renderCouponsCleanAscii() {
       const id = tr ? tr.getAttribute('data-id') : null;
       if (!id) return;
       if (btn.dataset.action === 'del') {
-        if (!window.confirm('¿Eliminar cupon?')) return;
+        if (!window.confirm('Â¿Eliminar cupon?')) return;
         await this.database.delete('coupons', id);
         Utils.toast('Cupon eliminado', 'warn');
         await this.renderCoupons();
@@ -3820,3 +3834,22 @@ SalonPOSApp.prototype.renderCoupons = async function renderCouponsCleanAscii() {
     });
   }
 };
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

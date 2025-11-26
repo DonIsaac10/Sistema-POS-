@@ -1,4 +1,4 @@
-// UI components module
+﻿// UI components module
 
 class UIComponents {
   // Navigation
@@ -133,25 +133,33 @@ class UIComponents {
         return sum + (total * (pct / 100));
       }, 0);
 
+      const stylistTxt = line.stylists && line.stylists.length > 0
+        ? `Estilistas: ${line.stylists.map(s => s.nombre).join(', ')}`
+        : 'Sin estilista';
+
+      const metaItems = [
+        `Base: ${Utils.money(base)}`,
+        discount > 0 ? `Desc: -${Utils.money(discount)}` : null,
+        adjust !== 0 ? `Ajuste: ${Utils.money(adjust)}` : null,
+        comm > 0 ? `Comisión: ${Utils.money(comm)}` : null
+      ].filter(Boolean).map(txt => `<span>${txt}</span>`).join('');
+
       html += `
         <div class="line" data-line-index="${index}">
-          <div>
-            <strong>${(line.variant && line.variant.nombre) || 'Producto'}</strong>
-            ${line.qty > 1 ? `<span class="muted">x${line.qty}</span>` : ''}
-            ${line.stylists && line.stylists.length > 0 ? `
-              <div class="muted small">Estilistas: ${line.stylists.map(s => s.nombre).join(', ')}</div>
-            ` : ''}
+          <div class="line-info">
+            <div class="line-title">
+              <strong>${(line.variant && line.variant.nombre) || 'Producto'}</strong>
+              ${line.qty > 1 ? `<span class="pill muted">x${line.qty}</span>` : ''}
+            </div>
+            <div class="muted small">${stylistTxt}</div>
+            <div class="line-meta">${metaItems}</div>
           </div>
-          <div class="meta">
-            <div>Base: ${Utils.money(base)}</div>
-            ${discount > 0 ? `<div>Desc: ${Utils.money(discount)}</div>` : ''}
-            ${adjust !== 0 ? `<div>Ajuste: ${Utils.money(adjust)}</div>` : ''}
-            <div><strong>${Utils.money(total)}</strong></div>
-            ${comm > 0 ? `<div class="small muted">Comisi\u00f3n estilistas: ${Utils.money(comm)}</div>` : ''}
-          </div>
-          <div class="actions">
-            <button class="btn tiny" onclick="editLine(${index})">Estilista</button>
-            <button class="btn tiny err" onclick="removeLine(${index})">&times;</button>
+          <div class="line-actions">
+            <div class="line-price">${Utils.money(total)}</div>
+            <div class="line-buttons">
+              <button class="btn tiny" onclick="editLine(${index})">Estilista</button>
+              <button class="btn tiny err" onclick="removeLine(${index})">&times;</button>
+            </div>
           </div>
         </div>
       `;
@@ -394,4 +402,6 @@ if (typeof module !== 'undefined' && module.exports) {
 } else {
   window.UIComponents = UIComponents;
 }
+
+
 
