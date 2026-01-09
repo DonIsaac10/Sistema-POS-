@@ -147,6 +147,51 @@ input, select, textarea{
   max-width:260px;
 }
 
+/* Pago: controles a todo lo ancho */
+#paymentMethods{
+  width:100%;
+  display:flex;
+  flex-direction:column;
+  gap:10px;
+}
+#paymentMethods > *{
+  width:100%;
+}
+#paymentMethods .paybox{
+  width:100%;
+  align-items:stretch;
+}
+#paymentMethods .paybox label,
+#paymentMethods label{
+  display:block;
+  width:100%;
+}
+#paymentMethods .paybox select,
+#paymentMethods .paybox input,
+#paymentMethods #singleSection input,
+#paymentMethods #mixedSection input,
+#paymentMethods #mixedSection select{
+  display:block;
+  width:100%;
+  max-width:100%;
+}
+#paymentMethods .row{
+  width:100%;
+  flex-direction:column;
+  align-items:stretch;
+  gap:8px;
+}
+#paymentMethods .row > *{
+  width:100%;
+}
+#paymentMethods .btn{
+  width:100%;
+  justify-content:center;
+}
+#paymentMethods .card{
+  width:100%;
+}
+
 .chip.inline {
   flex-direction:row;
   align-items:center;
