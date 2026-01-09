@@ -342,11 +342,18 @@ class POSLogic {
     const settings = await this.db.getById('settings', 'main');
     const commissionCap = Number((settings && settings.commission_cap) || 20);
 
-    // Save lines
+    // Save lines with computed totals (ensures commissions are calculated)
     for (const line of pos.lines) {
+      const base = Number((line.variant && line.variant.precio) || 0) * Number(line.qty || 1);
+      const disc = Number(line.discount || 0);
+      const adj = line.manualAdjust
+        ? (line.manualAdjust.sign === '+' ? Number(line.manualAdjust.monto || 0) : -Number(line.manualAdjust.monto || 0))
+        : 0;
+      const lineTotal = Math.max(0, base - disc + adj);
+
       const lineComm = (line.stylists || []).reduce((sum, st) => {
         const pct = Math.min(Number(st.pct || 0), commissionCap);
-        return sum + (Number(line.lineTotal || 0) * (pct / 100));
+        return sum + (lineTotal * (pct / 100));
       }, 0);
 
       await this.db.put('pos_lines', {
@@ -359,8 +366,8 @@ class POSLogic {
         manualAdjust: line.manualAdjust,
         stylists: line.stylists,
         price: (line.variant && line.variant.precio) || 0,
-        base: line.base,
-        lineTotal: line.lineTotal,
+        base: base,
+        lineTotal: Number(Utils.fmtMoney(lineTotal)),
         commission: lineComm
       });
 
@@ -368,7 +375,7 @@ class POSLogic {
       if (Array.isArray(line.stylists)) {
         for (const st of line.stylists) {
           const pct = Math.min(Number(st.pct || 0), commissionCap);
-          const comm = Number(line.lineTotal || 0) * (pct / 100);
+          const comm = lineTotal * (pct / 100);
           if (comm > 0) {
             await this.db.put('payroll', {
               id: Utils.uid(),
