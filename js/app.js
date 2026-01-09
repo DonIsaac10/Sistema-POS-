@@ -30,6 +30,8 @@ class SalonPOSApp {
     const main = Utils.$('#main');
     if (!main) return;
 
+    await this.reloadStylists();
+
     const filters = this.payrollFilters || {};
     const from = filters.from ? new Date(filters.from + 'T00:00:00') : null;
     const to = filters.to ? new Date(filters.to + 'T23:59:59') : null;
