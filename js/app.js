@@ -41,6 +41,8 @@ class SalonPOSApp {
     const orders = await this.database.getAll('pos_orders');
     const lines = await this.database.getAll('pos_lines');
     const tips = await this.database.getAll('pos_tips');
+    const periodClosures = await this.database.getAll('payroll_periods');
+    const closureMap = new Map((periodClosures || []).map(p => [p.id, p]));
     const stylistMap = new Map(this.stylists.map(s => [s.id, s]));
     const orderDates = new Map((orders || []).map(o => [o.id, o.fecha_hora || o.fecha || '']));
     const commissionCap = Number((this.settings && this.settings.commission_cap) || 20);
@@ -143,9 +145,13 @@ class SalonPOSApp {
 
       const total = base + comm + tipSum;
       const pending = Math.max(0, total - paid);
-      return {id: st.id, nombre: st.nombre, base, comm, tipSum, total, paid, pending};
+      const periodKey = this.payrollPeriodKey(filters.from || '', filters.to || '', st.id);
+      const closed = !!(filters.from && filters.to && closureMap.has(periodKey));
+      const closure = closed ? closureMap.get(periodKey) : null;
+      return {id: st.id, nombre: st.nombre, base, comm, tipSum, total, paid, pending, periodKey, closed, closure};
     }).filter(p => !stylistId || p.id === stylistId);
 
+    const canClose = !!(filters.from && filters.to);
     const summaryHTML = payables.map(p => `
       <tr data-sty="${p.id}">
         <td>${this.safeValue(p.nombre || '')}</td>
@@ -156,7 +162,7 @@ class SalonPOSApp {
         <td class="right">${Utils.money(p.paid)}</td>
         <td class="right">${Utils.money(p.pending)}</td>
         <td class="right">
-          ${p.pending > 0 ? `<button class="btn tiny" data-action="pay-pending" data-id="${p.id}">Registrar pendiente</button>` : ''}
+          ${p.closed ? '<span class="ok">Cerrado</span>' : (canClose && p.pending > 0 ? `<button class="btn tiny" data-action="pay-pending" data-id="${p.id}">Registrar pendiente</button>` : (canClose ? '' : '<span class="muted">Define periodo</span>'))}
         </td>
       </tr>
     `).join('') || '<tr><td colspan="8" class="center muted">Sin estilistas en el rango</td>';
@@ -217,6 +223,7 @@ class SalonPOSApp {
               <input type="text" id="payrollSearch" placeholder="Concepto, notas, m&eacute;todo" value="${filters.search || ''}">
             </div>
             <button class="btn" id="payrollApply">Filtrar</button>
+            <button class="btn light" id="payrollExport">Exportar CSV</button>
           </div>
 
           <div class="card" style="background:#f9fbfb">
@@ -317,6 +324,10 @@ class SalonPOSApp {
 
     const applyBtn = Utils.$('#payrollApply');
     if (applyBtn) applyBtn.onclick = applyFilters;
+    const exportBtn = Utils.$('#payrollExport');
+    if (exportBtn) {
+      exportBtn.onclick = () => this.exportPayrollCSV(payables, filteredEntries, filters);
+    }
 
     const addBtn = Utils.$('#payrollAdd');
     if (addBtn) {
@@ -398,19 +409,56 @@ class SalonPOSApp {
         const id = btn.dataset.id;
         const pay = payables.find(p => p.id === id);
         if (!pay || pay.pending <= 0) return;
+        if (!filters.from || !filters.to) {
+          Utils.toast('Define un periodo (Del/Al) para cerrar n&oacute;mina.', 'warn');
+          return;
+        }
+        const periodKey = pay.periodKey || this.payrollPeriodKey(filters.from, filters.to, id);
+        if (closureMap.has(periodKey)) {
+          Utils.toast('Ese periodo ya est&aacute; cerrado para este estilista.', 'warn');
+          return;
+        }
         const fecha = new Date().toISOString().slice(0,10);
+        const payrollId = Utils.uid();
         await this.database.put('payroll', {
-          id: Utils.uid(),
+          id: payrollId,
           stylist_id: id,
           stylist_nombre: this.safeValue(stylistMap.get(id) ? stylistMap.get(id).nombre : ''),
           fecha,
           fecha_hora: fecha + 'T00:00:00',
           commission: pay.pending,
+          base_amount: pay.base,
+          commission_amount: pay.comm,
+          tip_amount: pay.tipSum,
+          total_amount: pay.total,
           concepto: 'N&oacute;mina periodo',
           metodo: 'Efectivo',
           status: 'pendiente',
           tipo: 'auto',
+          period_from: filters.from || '',
+          period_to: filters.to || '',
+          period_key: periodKey,
+          freq_base: baseFreq,
+          freq_comm: commFreq,
+          freq_tip: tipFreq,
           notas: `Base+comisiones+propinas ${filters.from || ''} a ${filters.to || ''}`,
+          created_at: Utils.nowISO()
+        });
+        await this.database.put('payroll_periods', {
+          id: periodKey,
+          payroll_id: payrollId,
+          stylist_id: id,
+          stylist_nombre: this.safeValue(stylistMap.get(id) ? stylistMap.get(id).nombre : ''),
+          period_from: filters.from || '',
+          period_to: filters.to || '',
+          base_amount: pay.base,
+          commission_amount: pay.comm,
+          tip_amount: pay.tipSum,
+          total_amount: pay.total,
+          status: 'cerrado',
+          freq_base: baseFreq,
+          freq_comm: commFreq,
+          freq_tip: tipFreq,
           created_at: Utils.nowISO()
         });
         Utils.toast('Pendiente registrado', 'ok');
@@ -560,6 +608,13 @@ class SalonPOSApp {
       return d.toISOString().slice(0, 10);
     }
     return '';
+  }
+
+  payrollPeriodKey(from, to, stylistId) {
+    const f = from || '';
+    const t = to || '';
+    const s = stylistId || '';
+    return `payroll:${s}:${f}:${t}`;
   }
 
   applyReportPreset(preset) {
@@ -2663,11 +2718,14 @@ class SalonPOSApp {
       categoria: 'n&oacute;mina',
       monto: Number(p.commission || p.monto || p.amount || 0),
       fecha: (p.fecha_hora || p.fecha || '').slice(0, 10),
-      status: 'ejecutado'
+      status: 'ejecutado',
+      tipo: 'nomina'
     }));
+    const expenseRows = (expenses || []).map(e => Object.assign({tipo: 'gasto'}, e));
+    const purchaseRows = (purchases || []).map(p => Object.assign({tipo: 'compra'}, p));
     const allExpenses = []
-      .concat(expenses || [])
-      .concat(purchases || [])
+      .concat(expenseRows || [])
+      .concat(purchaseRows || [])
       .concat(payrollPaid || []);
     const filters = this.reportFilters || {};
     const from = filters.from ? new Date(filters.from + 'T00:00:00') : null;
@@ -2733,7 +2791,9 @@ class SalonPOSApp {
       if (!byDay[key]) {
         byDay[key] = {total: 0, count: 0};
       }
-      byDay[key].total += Number(order.total || 0);
+      const tipLine = Number(order.tipTotal || 0);
+      const netOrder = Math.max(0, Number(order.total || 0) - tipLine);
+      byDay[key].total += netOrder;
       byDay[key].count += 1;
     });
 
@@ -2741,7 +2801,9 @@ class SalonPOSApp {
     filteredOrders.forEach(order => {
       const key = (order.fecha_hora || order.fecha || '').slice(0, 10) || 'sin-fecha';
       if (!cashFlow[key]) cashFlow[key] = {in: 0, out: 0};
-      cashFlow[key].in += Number(order.total || 0);
+      const tipLine = Number(order.tipTotal || 0);
+      const netOrder = Math.max(0, Number(order.total || 0) - tipLine);
+      cashFlow[key].in += netOrder;
     });
     filteredExpenses.forEach(exp => {
       const key = (exp.fecha || exp.fecha_hora || '').slice(0, 10) || 'sin-fecha';
@@ -3398,28 +3460,97 @@ class SalonPOSApp {
     await this.renderPOS();
   }
 
+  exportPayrollCSV(payables, entries, filters) {
+    const from = (filters && filters.from) || '';
+    const to = (filters && filters.to) || '';
+    const headers = [
+      'Tipo','Empleado','Fecha','Base','Comisiones','Propinas','Total','Pagado','Pendiente',
+      'Concepto','Metodo','Estado','Notas','Periodo desde','Periodo hasta'
+    ];
+    const rows = [];
+
+    (payables || []).forEach(p => {
+      rows.push({
+        'Tipo': 'Resumen',
+        'Empleado': p.nombre || '',
+        'Fecha': '',
+        'Base': Utils.to2(p.base),
+        'Comisiones': Utils.to2(p.comm),
+        'Propinas': Utils.to2(p.tipSum),
+        'Total': Utils.to2(p.total),
+        'Pagado': Utils.to2(p.paid),
+        'Pendiente': Utils.to2(p.pending),
+        'Concepto': '',
+        'Metodo': '',
+        'Estado': '',
+        'Notas': '',
+        'Periodo desde': from,
+        'Periodo hasta': to
+      });
+    });
+
+    (entries || []).forEach(r => {
+      const amt = Number(r.commission || r.monto || r.amount || 0);
+      rows.push({
+        'Tipo': 'Detalle',
+        'Empleado': r.stylist_nombre || '',
+        'Fecha': (r.fecha_hora || r.fecha || r.created_at || '').slice(0, 10),
+        'Base': Utils.to2(r.base_amount || 0),
+        'Comisiones': Utils.to2(r.commission_amount || 0),
+        'Propinas': Utils.to2(r.tip_amount || 0),
+        'Total': Utils.to2(r.total_amount || amt),
+        'Pagado': (r.status || 'pendiente') === 'pagado' ? Utils.to2(amt) : 0,
+        'Pendiente': (r.status || 'pendiente') === 'pagado' ? 0 : Utils.to2(amt),
+        'Concepto': r.concepto || '',
+        'Metodo': r.metodo || r.method || '',
+        'Estado': r.status || '',
+        'Notas': r.notas || '',
+        'Periodo desde': r.period_from || '',
+        'Periodo hasta': r.period_to || ''
+      });
+    });
+
+    const csv = Utils.toCSV(headers, rows);
+    const name = Utils.tsName(`nomina_${from || 'inicio'}_${to || 'hoy'}`) + '.csv';
+    Utils.downloadFile(name, csv, 'text/csv');
+  }
+
   exportReportData(orders, expenses) {
-    const rows = ['Tipo,Folio/ID,Fecha,Nombre,Total'];
+    const rows = ['Tipo,Folio/ID,Fecha,Concepto,Categoria,Estado,Monto'];
+    const pushRow = (values) => {
+      rows.push(values.map(v => Utils.csvEscape(v)).join(','));
+    };
+
     (orders || []).forEach(order => {
       const date = new Date(order.fecha_hora || order.fecha || Date.now()).toISOString();
-      rows.push([
-        'Orden',
-        `"${(order.folio || '').replace(/"/g, '""')}"`,
+      const folio = order.folio || '';
+      const cliente = (order.customer && order.customer.nombre) || 'Cliente general';
+      pushRow([
+        'Ingreso',
+        folio,
         date,
-        `"${(((order.customer && order.customer.nombre) || 'Cliente general')).replace(/"/g, '""')}"`,
+        cliente,
+        'Venta',
+        'ejecutado',
         Number(order.total || 0).toFixed(2)
-      ].join(','));
+      ]);
     });
 
     (expenses || []).forEach(exp => {
       const date = new Date(exp.fecha || exp.fecha_hora || Date.now()).toISOString();
-      rows.push([
-        'Gasto',
-        `"${(exp.id || '').replace(/"/g, '""')}"`,
+      const tipo = (exp.tipo || 'gasto').toLowerCase();
+      const label = tipo === 'compra' ? 'Compra' : (tipo === 'nomina' ? 'Nomina' : 'Gasto');
+      const concepto = ((exp.nombre || exp.descripcion || '') + ' ' + (exp.categoria || '')).trim();
+      const status = exp.status || 'ejecutado';
+      pushRow([
+        label,
+        exp.id || '',
         date,
-        `"${(((exp.nombre || exp.descripcion || '') + ' ' + (exp.categoria || '')).trim()).replace(/"/g, '""')}"`,
+        concepto,
+        exp.categoria || '',
+        status,
         -Number(exp.monto || exp.total || 0).toFixed(2)
-      ].join(','));
+      ]);
     });
 
     const csv = rows.join('\n');

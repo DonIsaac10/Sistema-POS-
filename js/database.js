@@ -1,10 +1,10 @@
 // Database operations module
 const DB_NAME = 'salon_ba_v1';
-const DB_VERSION = 2;
+const DB_VERSION = 3;
 const STORES = [
   'settings','cashiers','customers','stylists','products','variants',
   'coupons','pos_orders','pos_lines','pos_tips','payments',
-  'expenses','expense_categories','purchases','suppliers','payroll','audit_logs','scheduler'
+  'expenses','expense_categories','purchases','suppliers','payroll','payroll_periods','audit_logs','scheduler'
 ];
 
 let db = null;
