@@ -76,7 +76,10 @@ class SalonPOSApp {
       return true;
     };
 
-    const filteredEntries = (entries || []).filter(match).sort((a, b) => {
+    const filteredEntries = (entries || [])
+      .filter(row => (row.tipo || '') !== 'commission')
+      .filter(match)
+      .sort((a, b) => {
       const ad = new Date(a.fecha_hora || a.fecha || a.created_at || 0).getTime();
       const bd = new Date(b.fecha_hora || b.fecha || b.created_at || 0).getTime();
       return bd - ad;
@@ -420,7 +423,7 @@ class SalonPOSApp {
           Utils.toast('Ese periodo ya est&aacute; cerrado para este estilista.', 'warn');
           return;
         }
-        const fecha = new Date().toISOString().slice(0,10);
+        const fecha = (filters.to || filters.from || new Date().toISOString().slice(0,10));
         const payrollId = Utils.uid();
         await this.database.put('payroll', {
           id: payrollId,
@@ -433,7 +436,7 @@ class SalonPOSApp {
           commission_amount: pay.comm,
           tip_amount: pay.tipSum,
           total_amount: pay.total,
-          concepto: 'N&oacute;mina periodo',
+          concepto: 'Nomina periodo',
           metodo: 'Efectivo',
           status: 'pendiente',
           tipo: 'auto',
@@ -2713,7 +2716,10 @@ class SalonPOSApp {
     const expenses = await this.database.getAll('expenses');
     const purchases = await this.database.getAll('purchases');
     const payroll = await this.database.getAll('payroll');
-    const payrollPaid = (payroll || []).filter(p => (p.status || 'pendiente').toLowerCase() === 'pagado').map(p => ({
+    const payrollPaid = (payroll || [])
+      .filter(p => (p.tipo || '') !== 'commission')
+      .filter(p => (p.status || 'pendiente').toLowerCase() === 'pagado')
+      .map(p => ({
       id: p.id,
       nombre: p.concepto || 'n&oacute;mina',
       descripcion: p.notas || '',

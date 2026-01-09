@@ -371,27 +371,8 @@ class POSLogic {
         commission: lineComm
       });
 
-      // Save commissions per stylist (using payroll store)
-      if (Array.isArray(line.stylists)) {
-        for (const st of line.stylists) {
-          const pct = Math.min(Number(st.pct || 0), commissionCap);
-          const comm = lineTotal * (pct / 100);
-          if (comm > 0) {
-            await this.db.put('payroll', {
-              id: Utils.uid(),
-              order_id: order.id,
-              line_id: line.id,
-              stylist_id: st.id,
-              pct: pct,
-              commission: comm,
-              fecha_hora: Utils.nowISO(),
-              concepto: `Comisi\u00f3n ${line.variant && line.variant.nombre ? line.variant.nombre : ''}`.trim(),
-              status: 'pendiente',
-              tipo: 'commission'
-            });
-          }
-        }
-      }
+      // Comisiones se calculan desde pos_lines para n�mina,
+      // no se guardan como registros individuales.
     }
 
     // Save tips if any
