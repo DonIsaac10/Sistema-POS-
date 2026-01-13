@@ -2416,6 +2416,10 @@ class SalonPOSApp {
           onOk: async () => {
             const counted = Number(Utils.$('#cashCounted').value || 0);
             const diff = Number((counted - summary.expectedCash).toFixed(2));
+            if (diff !== 0) {
+              Utils.toast('El efectivo contado debe coincidir con el esperado para cerrar.', 'warn');
+              return false;
+            }
             const updated = Object.assign({}, summary.session, {
               status: 'closed',
               closed_at: Utils.nowISO(),

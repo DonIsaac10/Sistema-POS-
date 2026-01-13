@@ -27,13 +27,13 @@ class StateManager {
       {id: 'customers', label: 'Clientes'},
       {id: 'stylists', label: 'Estilistas / Cajeros'},
       {id: 'attendance', label: 'Asistencia'},
-      {id: 'cash', label: 'Caja'},
       {id: 'expenses', label: 'Gastos'},
       {id: 'purchases', label: 'Compras'},
       {id: 'suppliers', label: 'Proveedores'},
       {id: 'payroll', label: 'N\u00f3mina'},
       {id: 'reports', label: 'Reportes'},
-      {id: 'settings', label: 'Ajustes / Respaldo'}
+      {id: 'settings', label: 'Ajustes / Respaldo'},
+      {id: 'cash', label: 'Caja'}
     ];
   }
 
