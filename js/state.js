@@ -27,6 +27,7 @@ class StateManager {
       {id: 'customers', label: 'Clientes'},
       {id: 'stylists', label: 'Estilistas / Cajeros'},
       {id: 'attendance', label: 'Asistencia'},
+      {id: 'cash', label: 'Caja'},
       {id: 'expenses', label: 'Gastos'},
       {id: 'purchases', label: 'Compras'},
       {id: 'suppliers', label: 'Proveedores'},

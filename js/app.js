@@ -24,6 +24,7 @@ class SalonPOSApp {
     this.expenseFilters = {from: null, to: null, category: '', status: 'all', search: ''};
     this.purchaseFilters = {from: null, to: null, supplier: '', status: 'all', search: ''};
     this.attendanceFilters = {from: '', to: '', stylist: '', search: ''};
+    this.cashSession = null;
   }
 
   // Nueva n&oacute;mina: calcula base + comisiones + propinas por periodo y permite registrar pagos pendientes/pagados
@@ -163,7 +164,7 @@ class SalonPOSApp {
         return sum + Number(r.commission || r.monto || r.amount || 0);
       }, 0);
 
-      const total = base + comm + tipSum;
+    const total = base + comm + tipSum;
       const pending = Math.max(0, total - paid);
       const periodKey = this.payrollPeriodKey(filters.from || '', filters.to || '', st.id);
       const closed = !!(filters.from && filters.to && closureMap.has(periodKey));
@@ -504,6 +505,12 @@ class SalonPOSApp {
       
       // Setup event listeners
       this.setupEventListeners();
+
+      // Ensure loading overlay doesn't block cash opening modal
+      UIComponents.hideLoading();
+
+      // Require cash opening before using the system
+      await this.ensureCashSession();
       
       // Render initial UI
       this.renderInitialUI();
@@ -895,6 +902,76 @@ class SalonPOSApp {
     UIComponents.renderFooter(firma);
   }
 
+  async loadCashSession() {
+    const sessions = await this.database.getAll('cash_sessions');
+    const open = (sessions || []).filter(s => (s.status || 'open') === 'open');
+    if (!open.length) {
+      this.cashSession = null;
+      return null;
+    }
+    const latest = open.sort((a, b) => new Date(b.opened_at || b.fecha || 0) - new Date(a.opened_at || a.fecha || 0))[0];
+    this.cashSession = latest || null;
+    return this.cashSession;
+  }
+
+  async ensureCashSession() {
+    const current = await this.loadCashSession();
+    if (current) return current;
+
+    return new Promise((resolve) => {
+      const showOpen = () => {
+        Utils.showModal('Apertura de caja', `
+          <div class="row">
+            <div>
+              <label>Fecha</label>
+              <input type="date" id="cashOpenDate" value="${new Date().toISOString().slice(0,10)}">
+            </div>
+            <div>
+              <label>Cajero</label>
+              <input type="text" id="cashOpenCashier" placeholder="Nombre">
+            </div>
+            <div>
+              <label>Fondo inicial</label>
+              <input type="number" id="cashOpenAmount" min="0" step="0.01" placeholder="0.00">
+            </div>
+          </div>
+          <div class="muted small" style="margin-top:8px">Debes registrar la apertura para continuar.</div>
+        `, {
+          okText: 'Abrir caja',
+          cancelText: '',
+          onOk: async () => {
+            const fecha = Utils.$('#cashOpenDate').value || new Date().toISOString().slice(0,10);
+            const cashier = Utils.cleanTxt(Utils.$('#cashOpenCashier').value || '');
+            const amount = Number(Utils.$('#cashOpenAmount').value || 0);
+            if (!cashier) {
+              Utils.toast('Cajero requerido', 'warn');
+              return false;
+            }
+            const session = {
+              id: Utils.uid(),
+              fecha,
+              cashier,
+              opening_amount: amount,
+              opened_at: Utils.nowISO(),
+              status: 'open'
+            };
+            await this.database.put('cash_sessions', session);
+            this.cashSession = session;
+            resolve(session);
+            return true;
+          }
+        });
+
+        const cancel = Utils.$('#mCancel');
+        if (cancel) cancel.style.display = 'none';
+        const closeBtn = Utils.$('#modalClose');
+        if (closeBtn) closeBtn.style.display = 'none';
+      };
+
+      showOpen();
+    });
+  }
+
   renderNav() {
     UIComponents.renderNav(
       this.stateManager.activeTab,
@@ -923,6 +1000,9 @@ class SalonPOSApp {
           break;
         case 'attendance':
           await this.renderAttendance();
+          break;
+        case 'cash':
+          await this.renderCash();
           break;
         case 'expenses':
           await this.renderExpenses();
@@ -2128,6 +2208,235 @@ class SalonPOSApp {
           }
         });
       });
+    }
+  }
+
+  async getCashSummary() {
+    const session = this.cashSession;
+    if (!session) return null;
+    const orders = await this.database.getAll('pos_orders');
+    const moves = await this.database.getAll('cash_moves');
+    const openedAt = new Date(session.opened_at || session.fecha || Date.now());
+    const inRange = (dateStr) => {
+      const d = new Date(dateStr || Date.now());
+      return d >= openedAt;
+    };
+
+    let cashIn = 0;
+    let cardIn = 0;
+    let transferIn = 0;
+    let otherIn = 0;
+    let ordersCount = 0;
+
+    (orders || []).forEach(order => {
+      if (!inRange(order.fecha_hora || order.fecha)) return;
+      ordersCount += 1;
+      (order.payments || []).forEach(p => {
+        const metodo = (p.metodo || '').toLowerCase();
+        const monto = Number(p.monto || 0);
+        if (metodo.includes('efectivo')) cashIn += monto;
+        else if (metodo.includes('tarjeta')) cardIn += monto;
+        else if (metodo.includes('transfer')) transferIn += monto;
+        else otherIn += monto;
+      });
+    });
+
+    const egresos = (moves || []).filter(m => m.session_id === session.id && m.tipo === 'egreso');
+    const egresosTotal = egresos.reduce((s, m) => s + Number(m.monto || 0), 0);
+
+    const expectedCash = Number((Number(session.opening_amount || 0) + cashIn - egresosTotal).toFixed(2));
+
+    return {
+      session,
+      cashIn,
+      cardIn,
+      transferIn,
+      otherIn,
+      ordersCount,
+      egresos,
+      egresosTotal,
+      expectedCash
+    };
+  }
+
+  async renderCash() {
+    const main = Utils.$('#main');
+    if (!main) return;
+
+    if (!this.cashSession) {
+      await this.ensureCashSession();
+    }
+
+    const summary = await this.getCashSummary();
+    if (!summary) return;
+    const {session, cashIn, cardIn, transferIn, otherIn, egresos, egresosTotal, expectedCash, ordersCount} = summary;
+
+    const rowsHTML = (egresos || []).map(m => `
+      <tr data-id="${m.id}">
+        <td>${this.safeValue(m.fecha || '')}</td>
+        <td>${this.safeValue(m.concepto || '')}</td>
+        <td class="right">${Utils.money(m.monto || 0)}</td>
+        <td class="right"><button class="btn tiny err" data-action="del">&times;</button></td>
+      </tr>
+    `).join('') || '<tr><td colspan="4" class="center muted">Sin egresos</td></tr>';
+
+    main.innerHTML = `
+      <div class="card">
+        <h3>Caja</h3>
+        <div class="pad stack">
+          <div class="row" style="gap:12px;flex-wrap:wrap">
+            <div class="card-lite" style="flex:1;min-width:160px">
+              <div class="label-aux">Apertura</div>
+              <div><strong>${Utils.money(session.opening_amount || 0)}</strong></div>
+              <div class="muted small">${this.safeValue(session.fecha || '')}</div>
+              <div class="muted small">${this.safeValue(session.cashier || '')}</div>
+            </div>
+            <div class="card-lite" style="flex:1;min-width:160px">
+              <div class="label-aux">Efectivo</div>
+              <div><strong>${Utils.money(cashIn)}</strong></div>
+              <div class="muted small">${ordersCount} tickets</div>
+            </div>
+            <div class="card-lite" style="flex:1;min-width:160px">
+              <div class="label-aux">Tarjeta</div>
+              <div><strong>${Utils.money(cardIn)}</strong></div>
+            </div>
+            <div class="card-lite" style="flex:1;min-width:160px">
+              <div class="label-aux">Transferencia</div>
+              <div><strong>${Utils.money(transferIn)}</strong></div>
+            </div>
+            <div class="card-lite" style="flex:1;min-width:160px">
+              <div class="label-aux">Otros</div>
+              <div><strong>${Utils.money(otherIn)}</strong></div>
+            </div>
+          </div>
+
+          <div class="row" style="gap:12px;flex-wrap:wrap">
+            <div class="card-lite" style="flex:1;min-width:200px">
+              <div class="label-aux">Egresos</div>
+              <div><strong>${Utils.money(egresosTotal)}</strong></div>
+            </div>
+            <div class="card-lite" style="flex:1;min-width:200px">
+              <div class="label-aux">Efectivo esperado</div>
+              <div><strong>${Utils.money(expectedCash)}</strong></div>
+            </div>
+            <div style="display:flex;align-items:flex-end">
+              <button class="btn" id="cashClose">Cierre de caja</button>
+            </div>
+          </div>
+
+          <div class="card muted" style="background:#f9fbfb">
+            <div class="row" style="flex-wrap:wrap; gap:10px">
+              <div style="flex:1; min-width:200px">
+                <label>Concepto</label>
+                <input type="text" id="cashOutConcept" placeholder="Salida de efectivo">
+              </div>
+              <div>
+                <label>Monto</label>
+                <input type="number" id="cashOutAmount" min="0" step="0.01" placeholder="0.00">
+              </div>
+              <button class="btn" id="cashOutAdd">Registrar egreso</button>
+            </div>
+          </div>
+
+          <div style="overflow:auto">
+            <table class="table" id="cashOutTable">
+              <thead>
+                <tr>
+                  <th>Fecha</th>
+                  <th>Concepto</th>
+                  <th class="right">Monto</th>
+                  <th class="right">Acciones</th>
+                </tr>
+              </thead>
+              <tbody>${rowsHTML}</tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    `;
+
+    const addBtn = Utils.$('#cashOutAdd');
+    if (addBtn) {
+      addBtn.onclick = async () => {
+        const concepto = Utils.cleanTxt(Utils.$('#cashOutConcept').value || '');
+        const monto = Number(Utils.$('#cashOutAmount').value || 0);
+        if (!concepto) return Utils.toast('Concepto requerido', 'warn');
+        if (monto <= 0) return Utils.toast('Monto requerido', 'warn');
+        await this.database.put('cash_moves', {
+          id: Utils.uid(),
+          session_id: session.id,
+          tipo: 'egreso',
+          concepto,
+          monto,
+          fecha: new Date().toISOString().slice(0,10),
+          created_at: Utils.nowISO()
+        });
+        Utils.toast('Egreso registrado', 'ok');
+        await this.renderCash();
+      };
+    }
+
+    const table = Utils.$('#cashOutTable');
+    if (table) {
+      table.addEventListener('click', async (ev) => {
+        const btn = ev.target.closest('button[data-action]');
+        if (!btn) return;
+        const tr = btn.closest('tr[data-id]');
+        const id = tr ? tr.getAttribute('data-id') : null;
+        if (!id) return;
+        if (!window.confirm('Eliminar egreso?')) return;
+        await this.database.delete('cash_moves', id);
+        Utils.toast('Egreso eliminado', 'warn');
+        await this.renderCash();
+      });
+    }
+
+    const closeBtn = Utils.$('#cashClose');
+    if (closeBtn) {
+      closeBtn.onclick = async () => {
+        const summary = await this.getCashSummary();
+        if (!summary) return;
+        Utils.showModal('Cierre de caja', `
+          <div class="stack">
+            <div class="row">
+              <div>
+                <label>Efectivo esperado</label>
+                <input type="text" value="${Utils.money(summary.expectedCash)}" disabled>
+              </div>
+              <div>
+                <label>Efectivo contado</label>
+                <input type="number" id="cashCounted" min="0" step="0.01" placeholder="0.00">
+              </div>
+            </div>
+            <div class="muted small">Se requiere confirmaci&oacute;n para cerrar oficialmente.</div>
+          </div>
+        `, {
+          okText: 'Confirmar cierre',
+          cancelText: 'Cancelar',
+          onOk: async () => {
+            const counted = Number(Utils.$('#cashCounted').value || 0);
+            const diff = Number((counted - summary.expectedCash).toFixed(2));
+            const updated = Object.assign({}, summary.session, {
+              status: 'closed',
+              closed_at: Utils.nowISO(),
+              cash_in: summary.cashIn,
+              card_in: summary.cardIn,
+              transfer_in: summary.transferIn,
+              other_in: summary.otherIn,
+              egresos: summary.egresosTotal,
+              expected_cash: summary.expectedCash,
+              counted_cash: counted,
+              difference: diff
+            });
+            await this.database.put('cash_sessions', updated);
+            Utils.toast('Caja cerrada', 'ok');
+            this.cashSession = null;
+            await this.ensureCashSession();
+            await this.renderInitialUI();
+            return true;
+          }
+        });
+      };
     }
   }
 
