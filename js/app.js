@@ -23,6 +23,7 @@ class SalonPOSApp {
     this.customerSearchResults = [];
     this.expenseFilters = {from: null, to: null, category: '', status: 'all', search: ''};
     this.purchaseFilters = {from: null, to: null, supplier: '', status: 'all', search: ''};
+    this.attendanceFilters = {from: '', to: '', stylist: '', search: ''};
   }
 
   // Nueva n&oacute;mina: calcula base + comisiones + propinas por periodo y permite registrar pagos pendientes/pagados
@@ -44,6 +45,7 @@ class SalonPOSApp {
     const lines = await this.database.getAll('pos_lines');
     const tips = await this.database.getAll('pos_tips');
     const periodClosures = await this.database.getAll('payroll_periods');
+    const attendance = await this.database.getAll('attendance');
     const closureMap = new Map((periodClosures || []).map(p => [p.id, p]));
     const stylistMap = new Map(this.stylists.map(s => [s.id, s]));
     const orderDates = new Map((orders || []).map(o => [o.id, o.fecha_hora || o.fecha || '']));
@@ -118,6 +120,8 @@ class SalonPOSApp {
       }
       let comm = 0;
       let tipSum = 0;
+      let hoursTotal = 0;
+      const hourlyRate = Number(st.hourly_rate || 0);
 
       (lines || []).forEach(line => {
         if (!Array.isArray(line.stylists)) return;
@@ -140,6 +144,17 @@ class SalonPOSApp {
         tipSum += Number(t.monto || 0);
       });
 
+      if (hourlyRate > 0) {
+        (attendance || []).forEach(a => {
+          if (a.stylist_id !== st.id) return;
+          if (!inRange(a.fecha)) return;
+          const hrs = a.hours_rounded != null ? Number(a.hours_rounded) : this.roundQuarterHours(this.calcShiftHours(a.hora_entrada, a.hora_salida));
+          if (!Number.isFinite(hrs) || hrs <= 0) return;
+          hoursTotal += hrs;
+        });
+        base = Number((hoursTotal * hourlyRate).toFixed(2));
+      }
+
       const paid = (entries || []).reduce((sum, r) => {
         const date = r.fecha_hora || r.fecha || r.created_at;
         if (!inRange(date)) return sum;
@@ -153,14 +168,14 @@ class SalonPOSApp {
       const periodKey = this.payrollPeriodKey(filters.from || '', filters.to || '', st.id);
       const closed = !!(filters.from && filters.to && closureMap.has(periodKey));
       const closure = closed ? closureMap.get(periodKey) : null;
-      return {id: st.id, nombre: st.nombre, base, comm, tipSum, total, paid, pending, periodKey, closed, closure};
+      return {id: st.id, nombre: st.nombre, base, comm, tipSum, total, paid, pending, periodKey, closed, closure, hoursTotal, hourlyRate};
     }).filter(p => !stylistId || p.id === stylistId);
 
     const canClose = !!(filters.from && filters.to);
     const summaryHTML = payables.map(p => `
       <tr data-sty="${p.id}">
         <td>${this.safeValue(p.nombre || '')}</td>
-        <td class="right">${Utils.money(p.base)}</td>
+        <td class="right">${Utils.money(p.base)}${p.hourlyRate > 0 ? `<div class="muted small">${Number(p.hoursTotal || 0).toFixed(2)} h</div>` : ''}</td>
         <td class="right">${Utils.money(p.comm)}</td>
         <td class="right">${Utils.money(p.tipSum)}</td>
         <td class="right"><b>${Utils.money(p.total)}</b></td>
@@ -615,6 +630,28 @@ class SalonPOSApp {
     return '';
   }
 
+  timeToMinutes(value) {
+    if (!value || !/^\d{2}:\d{2}$/.test(value)) return null;
+    const parts = value.split(':');
+    const h = Number(parts[0]);
+    const m = Number(parts[1]);
+    if (Number.isNaN(h) || Number.isNaN(m)) return null;
+    return (h * 60) + m;
+  }
+
+  roundQuarterHours(hours) {
+    return Math.round(Number(hours || 0) * 4) / 4;
+  }
+
+  calcShiftHours(start, end) {
+    const inMin = this.timeToMinutes(start);
+    const outMin = this.timeToMinutes(end);
+    if (inMin == null || outMin == null) return null;
+    const diff = outMin - inMin;
+    if (diff < 0) return null;
+    return diff / 60;
+  }
+
   payrollPeriodKey(from, to, stylistId) {
     const f = from || '';
     const t = to || '';
@@ -883,6 +920,9 @@ class SalonPOSApp {
           break;
         case 'stylists':
           await this.renderStylists();
+          break;
+        case 'attendance':
+          await this.renderAttendance();
           break;
         case 'expenses':
           await this.renderExpenses();
@@ -1844,6 +1884,253 @@ class SalonPOSApp {
     `;
   }
 
+  async renderAttendance() {
+    const main = Utils.$('#main');
+    if (!main) return;
+
+    await this.reloadStylists();
+    const filters = this.attendanceFilters || {};
+    const from = filters.from ? new Date(filters.from + 'T00:00:00') : null;
+    const to = filters.to ? new Date(filters.to + 'T23:59:59') : null;
+    const stylistId = filters.stylist || '';
+    const q = (filters.search || '').toLowerCase();
+
+    const attendance = await this.database.getAll('attendance');
+    const stylistMap = new Map(this.stylists.map(s => [s.id, s.nombre]));
+
+    const match = (row) => {
+      const date = new Date(row.fecha || row.created_at || Date.now());
+      if (from && date < from) return false;
+      if (to && date > to) return false;
+      if (stylistId && row.stylist_id !== stylistId) return false;
+      if (q) {
+        const txt = `${row.stylist_nombre || ''} ${row.notas || ''} ${row.edit_reason || ''}`.toLowerCase();
+        if (!txt.includes(q)) return false;
+      }
+      return true;
+    };
+
+    const filtered = (attendance || []).filter(match).sort((a, b) => {
+      const ad = new Date(a.fecha || a.created_at || 0).getTime();
+      const bd = new Date(b.fecha || b.created_at || 0).getTime();
+      return bd - ad;
+    });
+
+    const optionsStylists = [`<option value="">Todos</option>`]
+      .concat(this.stylists.map(s => `<option value="${s.id}" ${s.id === stylistId ? 'selected' : ''}>${this.safeValue(s.nombre || '')}</option>`))
+      .join('');
+
+    const rowsHTML = filtered.map(row => {
+      const hours = row.hours != null ? Number(row.hours) : this.calcShiftHours(row.hora_entrada, row.hora_salida);
+      const rounded = row.hours_rounded != null ? Number(row.hours_rounded) : this.roundQuarterHours(hours);
+      const name = this.safeValue(row.stylist_nombre || stylistMap.get(row.stylist_id) || '');
+      return `
+        <tr data-id="${row.id}">
+          <td>${this.safeValue(row.fecha || '')}</td>
+          <td>${name}</td>
+          <td>${this.safeValue(row.hora_entrada || '')}</td>
+          <td>${this.safeValue(row.hora_salida || '')}</td>
+          <td class="right">${Number.isFinite(hours) ? hours.toFixed(2) : '--'}</td>
+          <td class="right">${Number.isFinite(rounded) ? rounded.toFixed(2) : '--'}</td>
+          <td class="small">${this.safeValue(row.notas || row.edit_reason || '')}</td>
+          <td class="right">
+            <button class="btn tiny light" data-action="edit">Editar</button>
+            <button class="btn tiny err" data-action="del">&times;</button>
+          </td>
+        </tr>
+      `;
+    }).join('') || '<tr><td colspan="8" class="center muted">Sin registros</td></tr>';
+
+    main.innerHTML = `
+      <div class="card">
+        <h3>Asistencia</h3>
+        <div class="pad stack">
+          <div class="row" style="flex-wrap:wrap; gap:8px">
+            <div>
+              <label>Del</label>
+              <input type="date" id="attFrom" value="${filters.from || ''}">
+            </div>
+            <div>
+              <label>Al</label>
+              <input type="date" id="attTo" value="${filters.to || ''}">
+            </div>
+            <div>
+              <label>Estilista</label>
+              <select id="attStylistFilter">${optionsStylists}</select>
+            </div>
+            <div style="flex:1; min-width:200px">
+              <label>Buscar</label>
+              <input type="text" id="attSearch" placeholder="Nombre o notas" value="${filters.search || ''}">
+            </div>
+            <button class="btn" id="attApply">Filtrar</button>
+          </div>
+
+          <div class="card muted" style="background:#f9fbfb">
+            <div class="row" style="flex-wrap:wrap; gap:10px">
+              <div>
+                <label>Estilista</label>
+                <select id="attStylist">${optionsStylists.replace('Todos','Seleccione')}</select>
+              </div>
+              <div>
+                <label>Fecha</label>
+                <input type="date" id="attDate" value="${new Date().toISOString().slice(0,10)}">
+              </div>
+              <div>
+                <label>Entrada</label>
+                <input type="time" id="attIn">
+              </div>
+              <div>
+                <label>Salida</label>
+                <input type="time" id="attOut">
+              </div>
+              <div style="flex:1; min-width:200px">
+                <label>Notas</label>
+                <input type="text" id="attNotes" placeholder="Observaciones">
+              </div>
+              <button class="btn" id="attAdd">Agregar</button>
+            </div>
+          </div>
+
+          <div style="overflow:auto">
+            <table class="table" id="attTable">
+              <thead>
+                <tr>
+                  <th>Fecha</th>
+                  <th>Estilista</th>
+                  <th>Entrada</th>
+                  <th>Salida</th>
+                  <th class="right">Horas</th>
+                  <th class="right">Horas redondeadas</th>
+                  <th>Notas</th>
+                  <th class="right">Acciones</th>
+                </tr>
+              </thead>
+              <tbody>${rowsHTML}</tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    `;
+
+    const applyBtn = Utils.$('#attApply');
+    if (applyBtn) {
+      applyBtn.onclick = () => {
+        this.attendanceFilters = {
+          from: Utils.$('#attFrom').value || '',
+          to: Utils.$('#attTo').value || '',
+          stylist: Utils.$('#attStylistFilter').value || '',
+          search: Utils.$('#attSearch').value || ''
+        };
+        this.renderAttendance();
+      };
+    }
+
+    const addBtn = Utils.$('#attAdd');
+    if (addBtn) {
+      addBtn.onclick = async () => {
+        const styId = Utils.$('#attStylist').value || '';
+        const fecha = Utils.$('#attDate').value || '';
+        const entrada = Utils.$('#attIn').value || '';
+        const salida = Utils.$('#attOut').value || '';
+        const notas = Utils.cleanTxt(Utils.$('#attNotes').value || '');
+
+        if (!styId) return Utils.toast('Selecciona un estilista', 'warn');
+        if (!fecha) return Utils.toast('Fecha requerida', 'warn');
+        const hrs = this.calcShiftHours(entrada, salida);
+        if (hrs == null) return Utils.toast('Horario invalido', 'warn');
+        const rounded = this.roundQuarterHours(hrs);
+
+        const styName = stylistMap.get(styId) || '';
+        await this.database.put('attendance', {
+          id: Utils.uid(),
+          stylist_id: styId,
+          stylist_nombre: styName,
+          fecha,
+          hora_entrada: entrada,
+          hora_salida: salida,
+          hours: Number(hrs.toFixed(2)),
+          hours_rounded: Number(rounded.toFixed(2)),
+          notas,
+          created_at: Utils.nowISO()
+        });
+        Utils.toast('Asistencia registrada', 'ok');
+        await this.renderAttendance();
+      };
+    }
+
+    const table = Utils.$('#attTable');
+    if (table) {
+      table.addEventListener('click', async (ev) => {
+        const btn = ev.target.closest('button[data-action]');
+        if (!btn) return;
+        const tr = btn.closest('tr[data-id]');
+        const id = tr ? tr.getAttribute('data-id') : null;
+        if (!id) return;
+        const record = filtered.find(r => r.id === id);
+        if (!record) return;
+
+        if (btn.dataset.action === 'del') {
+          if (!window.confirm('Eliminar asistencia?')) return;
+          await this.database.delete('attendance', id);
+          Utils.toast('Asistencia eliminada', 'warn');
+          await this.renderAttendance();
+          return;
+        }
+
+        Utils.showModal('Editar asistencia', `
+          <div class="row">
+            <div>
+              <label>Fecha</label>
+              <input type="date" id="attEditDate" value="${this.safeValue(record.fecha || '')}">
+            </div>
+            <div>
+              <label>Entrada</label>
+              <input type="time" id="attEditIn" value="${this.safeValue(record.hora_entrada || '')}">
+            </div>
+            <div>
+              <label>Salida</label>
+              <input type="time" id="attEditOut" value="${this.safeValue(record.hora_salida || '')}">
+            </div>
+          </div>
+          <div style="margin-top:8px">
+            <label>Motivo de edicion</label>
+            <input type="text" id="attEditReason" placeholder="Motivo obligatorio">
+          </div>
+        `, {
+          okText: 'Guardar',
+          cancelText: 'Cancelar',
+          onOk: async () => {
+            const fecha = Utils.$('#attEditDate').value || '';
+            const entrada = Utils.$('#attEditIn').value || '';
+            const salida = Utils.$('#attEditOut').value || '';
+            const reason = Utils.cleanTxt(Utils.$('#attEditReason').value || '');
+            if (!reason) {
+              Utils.toast('Motivo requerido', 'warn');
+              return false;
+            }
+            const hrs = this.calcShiftHours(entrada, salida);
+            if (hrs == null) {
+              Utils.toast('Horario invalido', 'warn');
+              return false;
+            }
+            const rounded = this.roundQuarterHours(hrs);
+            record.fecha = fecha;
+            record.hora_entrada = entrada;
+            record.hora_salida = salida;
+            record.hours = Number(hrs.toFixed(2));
+            record.hours_rounded = Number(rounded.toFixed(2));
+            record.edit_reason = reason;
+            record.updated_at = Utils.nowISO();
+            await this.database.put('attendance', record);
+            Utils.toast('Asistencia actualizada', 'ok');
+            await this.renderAttendance();
+            return true;
+          }
+        });
+      });
+    }
+  }
+
   openCustomerForm(customerId = null) {
     const customer = customerId ? this.customers.find(c => c.id === customerId) : null;
     Utils.showModal(customer ? 'Editar cliente' : 'Nuevo cliente', `
@@ -1973,6 +2260,10 @@ class SalonPOSApp {
           <label>Sueldo base</label>
           <input type="number" id="stylistBase" min="0" step="0.01" placeholder="0.00" value="${this.safeValue((stylist && stylist.base_salary) != null ? stylist.base_salary : 0)}">
         </div>
+        <div>
+          <label>Sueldo por hora</label>
+          <input type="number" id="stylistHourly" min="0" step="0.01" placeholder="0.00" value="${this.safeValue((stylist && stylist.hourly_rate) != null ? stylist.hourly_rate : 0)}">
+        </div>
       </div>
     `, {
       okText: 'Guardar',
@@ -1991,6 +2282,7 @@ class SalonPOSApp {
     const phoneEl = Utils.$('#stylistPhone');
     const pctEl = Utils.$('#stylistPct');
     const baseEl = Utils.$('#stylistBase');
+    const hourlyEl = Utils.$('#stylistHourly');
 
     const nombre = Utils.cleanTxt((nameEl ? nameEl.value : '') || '');
     if (!nombre) {
@@ -2001,13 +2293,15 @@ class SalonPOSApp {
     const cap = Number((this.settings && this.settings.commission_cap) || 20);
     const pct = Utils.clamp(Number((pctEl ? pctEl.value : '') || 0), 0, cap);
     const baseSalary = Math.max(0, Number((baseEl ? baseEl.value : '') || 0));
+    const hourlyRate = Math.max(0, Number((hourlyEl ? hourlyEl.value : '') || 0));
     const record = {
       id: stylistId || undefined,
       nombre,
       rol: Utils.cleanTxt((roleEl ? roleEl.value : '') || ''),
       celular: Utils.cleanTxt((phoneEl ? phoneEl.value : '') || ''),
       pct,
-      base_salary: baseSalary
+      base_salary: baseSalary,
+      hourly_rate: hourlyRate
     };
 
     try {
@@ -3473,6 +3767,7 @@ class SalonPOSApp {
     const to = (filters && filters.to) || '';
     const headers = [
       'Tipo','Empleado','Fecha','Base','Comisiones','Propinas','Total','Pagado','Pendiente',
+      'Horas','Sueldo por hora',
       'Concepto','Metodo','Estado','Notas','Periodo desde','Periodo hasta'
     ];
     const rows = [];
@@ -3488,6 +3783,8 @@ class SalonPOSApp {
         'Total': Utils.to2(p.total),
         'Pagado': Utils.to2(p.paid),
         'Pendiente': Utils.to2(p.pending),
+        'Horas': Number(p.hoursTotal || 0).toFixed(2),
+        'Sueldo por hora': p.hourlyRate != null ? Number(p.hourlyRate || 0).toFixed(2) : '',
         'Concepto': '',
         'Metodo': '',
         'Estado': '',
@@ -3509,6 +3806,8 @@ class SalonPOSApp {
         'Total': Utils.to2(r.total_amount || amt),
         'Pagado': (r.status || 'pendiente') === 'pagado' ? Utils.to2(amt) : 0,
         'Pendiente': (r.status || 'pendiente') === 'pagado' ? 0 : Utils.to2(amt),
+        'Horas': r.hours_rounded != null ? Number(r.hours_rounded || 0).toFixed(2) : '',
+        'Sueldo por hora': r.hourly_rate != null ? Number(r.hourly_rate || 0).toFixed(2) : '',
         'Concepto': r.concepto || '',
         'Metodo': r.metodo || r.method || '',
         'Estado': r.status || '',
